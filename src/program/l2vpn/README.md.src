@@ -168,6 +168,7 @@ The entire architecture is shown in the following figure.
 
     DIAGRAM: VPN-TP
     
+<<<<<<< Updated upstream
     ----------------------------------- Decapsulation -------------------------------->
     <---------------------------------- Encapsulation --------------------------------- 
                                              +=-------------------------------+                         
@@ -199,6 +200,89 @@ The entire architecture is shown in the following figure.
                                              |                                |                         
                                              |  VPLS                          |                         
                                              +=-------------------------------+                         
+=======
+    -------------------------------------- Decapsulation ----------------------------------->
+    <------------------------------------- Encapsulation ------------------------------------ 
+                                                   +=-------------------------------+                         
+                                                   |  VPLS                          |                         
+                                                   |                                |                         
+                                                   |     +-------+    +---------+   |                         
+                                             +---------->+ PW    +<-->+         |   |                         
+                                             |     :     +-------+    |         +<-------> AC                 
+                                             |     |         .        | Bridge  |   :  .                      
+                                             |     |         .        |         |   |  .                      
+                                             |     |     +-------+    |         +<-------> AC                 
+                                             |+--------->+ PW    +<-->+         |   |                         
+                                             ||    |     +-------+    +---------+   |                         
+                           +------------+    ||    +=-------------------------------+                         
+                           |            +<---+|              .                                                
+                +----+     |            +<----+              .   
+    Uplink <--->+ ND +<--->+ dispatcher |                    .                                                
+                +----+     |            +<----+              .                                                
+                           |            +<---+|              .                                                
+                           +------------+    ||    +=-------------------------------+                         
+                                             ||    |     +-------+    +---------+   |                         
+                                             |+--------->+ PW    +<-->+         |   |                         
+                                             |     :     +-------+    |         +<-------> AC                 
+                                             |     |         .        | Bridge  |   :  .                      
+                                             |     |         .        |         |   |  .                      
+                                             |     |     +-------+    |         +<-------> AC                 
+                                             +---------->+ PW    +<-->|         |   |                         
+                                                   |     +-------+    +---------+   |                         
+                                                   |                                |                         
+                                                   |  VPLS                          |                         
+                                                   +=-------------------------------+                         
+
+Any of the ACs or uplinks can be implemented either as physical
+interfaces or as VLAN-mode sub-interfaces of a physical interface
+which is configured as a VLAN trunk.  In this case, an additional
+module called a _VLAN multiplexer_ is pushed between the physical
+interface and the next module.  The following diagram shows the
+topology when two ACs share one physical interface configured as a
+VLAN trunk, where the ACs use the VLAN IDs 100 and 200, respectively.
+
+
+    DIAGRAM: AC-VLAN-TRUNK
+    
+          +---------+
+          |         |  AC
+          | Bridge  +<------+
+          |         |       |VID 100
+          +---------+       V
+                         +--+--+   
+                         | VLAN|  trunk
+                         | Mux +<-------> interface
+                         |     |
+                         +--+--+
+          +---------+       ^
+          |         |       |VID 200
+          | Bridge  +<------+
+          |         |  AC
+          +---------+    
+
+If two uplinks share one physical interface, the topology looks as
+follows.  The ND modules now attach to the VLAN ports of the
+multiplexer and its trunk port connects to the interface.
+
+    DIAGRAM: UPLINK-VLAN-TRUNK
+    
+                                +----+ uplink +------------+
+                          +---->+ ND +<------>+ dispatcher +<----
+                   VID 100|     +----+        +------------+
+                          V
+                       +--+--+
+                trunk  | VLAN|
+    interface <------->+ Mux |
+                       |     |
+                       +--+--+
+                          ^
+                   VID 200|     +----+ uplink +------------+
+                          +---->+ ND +<------>+ dispatcher +<---
+                                +----+        +------------+
+
+It is possible to let all ACs and uplinks share the same physical
+port, providing a "VPNTP-on-a-stick" configuration.
+>>>>>>> Stashed changes
 
 ### <a name="tunnel_protos">Tunneling protocols</a>
 
@@ -920,9 +1004,193 @@ local snmp = {
   directory = shmem_dir
 }
 
+<<<<<<< Updated upstream
 return {
    uplink = {
       driver = Intel82599,
+=======
+### Basic Interface Configuration
+
+The following items make up the basic configuration of an interface
+
+```
+    name = <name>,
+    [ description = <description>, ]
+    driver = {
+      path = <path>,
+      name = <name>,
+      config = {
+        pciaddr = <pciaddress>,
+      },
+    },
+```
+
+The `name` and `pciaddr` items have already been discussed in the
+previous section.  The `description` can be any valid Lua string
+describing the purpose of the interface in the current configuration.
+It defaults to the empty string.
+
+The `path` must be a string that represents the path to the Lua module
+that implements the driver, while `name` must be a string that
+identifies the Lua table within the module.  The driver will be loaded
+by executing
+
+```
+require(<path>).<name>
+```
+
+For example, for the Intel 82599 NIC, `path` would be
+`apps.intel.intel_app` and `name` would be `Intel82599`.  The result
+of the `require` will be passed to the `confi.app()` API call to
+create an instance of the driver.
+
+The `config` table is passed as argument to the constructor of the
+driver module.  It is driver-specific.  For a physical interface, it
+will typically include at least the PCI address, for example
+
+```
+config = { pciaddr = "0000:03:00.0" }
+
+```
+
+Note: the device will be detached from the Linux kernel when the
+driver is configured and will not be re-attached automatically when
+the driver releases the device.  The device can be re-attached to the
+Linux kernel by executing
+
+```
+echo "<pciaddress>" > /sys/bus/pci/drivers/<driver>/bind
+```
+
+as root, where `<driver>` is the name of the Linux driver that
+controls the device (e.g. `igb` or `ixgbe`).
+
+The driver of a physical interface usually requires the MTU to be set
+on the link as a parameter.  However, the MTU is set as a generic
+interface property via the `mtu` option as shown in the next section.
+The MTU is automatically added to the `config` table with the key
+`mtu`.
+
+Whether `config` is a table or not depends on the requirement of the
+driver (driver configuration has not yet been standardized in the
+Snabb system).  For example, the driver for a `raw` interface only
+accepts a string:
+
+```
+  name = "Tap1",
+  driver = {
+    path = "apps.socket.raw",
+    name = "Raw",
+    config = "eth0",
+  }
+```
+
+In this case, the MTU cannot be added to `config` and is, in fact, not
+needed by the driver.
+
+### L2 Configuration
+
+Every physical interface is associated with parameters that control
+its behavior at the Ethernet layer (L2) consisting of the items
+
+```
+    mtu = <mtu>,
+    [ trunk = {
+        enable = true | false,
+        encapsulation = "dot1q" | "dot1ad" | <number>, ]
+```
+
+The `vlans` section of the trunk configuration is not shown here and
+will be discussed with the concept of
+[sub-interfaces](#sub-interfaces).
+
+<a name="MTU">The MTU (Maximum Transmission Unit)</a> is the maximum
+number of bytes in an entire Ethernet packet that can be transmitted
+on the link in either direction, i.e. the maximum receive unit (MRU)
+is automatically chosen to be identical to the MTU.  It includes the
+Ethernet header and payload but none of the other elements of a
+complete Ethernet frame (preamble, SOF, CRC) nor the interpacket gap.
+
+For untagged packets, the size of the Ethernet header is 14 bytes,
+which must be included in the MTU.  For example, an MTU of 1514 bytes
+is required to transport a payload of up to 1500 bytes.
+
+For every level of VLAN tagging, an additional 4 bytes need to be
+added to the MTU to accommodate the increased size of the Ethernet
+header.  E.g., if plain 802.1Q is used and the interface should still
+be able to transport 1500-byte IP packets, the MTU must be chosen as
+1518 bytes.
+
+Note that oversized packets are dropped silently but are counted in
+the `ifInDiscards` and `ifOutDiscards` objects if SNMP is enabled.
+
+The trunk configuration determines whether the link is carrying a
+service-delimiting tag.  By definition, this is a tag which is
+interpreted and removed by the `l2vpn` program itself as opposed to
+tags that only have meaning to the customer and must be ignored by the
+`l2vpn` program.
+
+If the `trunk.enable` field is set to `false` or the the entire
+`trunk` table is omitted, no service-delimiting tag is expected on
+packets received from the interface (anything beyond the source and
+destination MAC addresses is ignored) and no tag is added when packets
+are transmitted to the interface.  This configuration puts the
+physical interface into L2-mode where Ethernet frames are simply
+forwarded without any manipulations performed on them.  In
+conventional switches, this is sometimes referred to as a
+_switchport_.  The following example shows a complete interface
+configuration for this case:
+
+```
+{
+   name = "TenGigE0/0",
+   driver = {
+      path = "apps.intel.intel_app",
+      name = "Intel82599",
+      config = { pciaddr = "0000:03:00.0" },
+   },
+   mtu = 1514,
+   trunk = { enable = false }
+},
+```
+
+If the `trunk.enable` field is set to `true`, a service-delimiting tag
+is expected to be present immediately following the Ethernet header on
+received packets (also referred to as the "outer" tag).  The
+`encapsulation` field determines the value of the TPID field expected
+in the tag as described [above](#ac-modes).  In this configuration,
+so-called _sub-interfaces_ need to be defined as part of the trunk
+configuration to establish which VLAN IDs are expected to be
+transported on the trunk and how they should be processed by the
+`l2vpn` application.  This is further discussed
+[below](#sub-interfaces).
+
+Packets whose Ethertype field does not match that of the configured
+encapsulation, are silently dropped unless the ["native
+VLAN"](#native-vlan) feature is enabled.
+
+Note that even though only the outermost header is interpreted by the
+`l2vpn` program when trunking is enabled for an interface, the MTU
+must still cover the entire packet.  For example, if the customer is
+carrying her own VLAN trunk on top of the service-delimiting tag, the
+packets actually contain two tags and the MTU must be set to 1522
+bytes in order for the customer to be able to transport 1500-byte IP
+packets within her VLANs.
+
+### Address-family (L3) Configuration
+
+A L2-port as discussed in the previous section can be turned into a
+L3-port by adding a section containing address-family-specific
+configurations called `afs`:
+
+```
+  {
+    name = <name>,
+    [ description = <description>, ]
+    driver = {
+      path = <path>,
+      name = <name>,
+>>>>>>> Stashed changes
       config = {
         pciaddr = "0000:04:00.1",
         mtu = 9206,
