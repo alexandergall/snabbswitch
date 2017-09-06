@@ -666,8 +666,8 @@ function Intel:sync_stats ()
    set(stats.txdrop, self:txdrop())
    set(stats.txerrors, self:txerrors())
    set(stats.rxdmapackets, self:rxdmapackets())
-   for name, register in pairs(self.queue_stats) do
-      set(stats[name], register())
+   for _, name in ipairs(self.queue_stats_names) do
+      set(stats[name], self.queue_stats[name]())
    end
 end
 
@@ -769,16 +769,23 @@ function Intel1g:init ()
    self:unlock_sw_sem()
    if self.wait_for_link then self:wait_linkup() end
 end
-
-function Intel1g:link_status ()
+do
    local mask = bits { Link_up = 1 }
-   return bit.band(self.r.STATUS(), mask) == mask
+   function Intel1g:link_status ()
+      return bit.band(self.r.STATUS(), mask) == mask
+   end
 end
-function Intel1g:link_speed ()
-   return ({10000,100000,1000000,1000000})[1+bit.band(bit.rshift(self.r.STATUS(), 6),3)]
+do
+   local speeds = {10000,100000,1000000,1000000}
+   function Intel1g:link_speed ()
+      return (speeds)[1+bit.band(bit.rshift(self.r.STATUS(), 6),3)]
+   end
 end
-function Intel1g:promisc ()
-   return band(self.r.RCTL(), bits{UPE=3}) ~= 0ULL
+do
+   local mask = bits{UPE=3}
+   function Intel1g:promisc ()
+      return band(self.r.RCTL(), mask) ~= 0ULL
+   end
 end
 function Intel1g:rxbytes   () return self.r.GORCH()*2^32 + self.r.GORCL() end
 function Intel1g:rxdrop    () return self.r.MPC() + self.r.RNBC()         end
@@ -804,9 +811,11 @@ function Intel1g:init_queue_stats (frame)
       rxmcast = "PQMPRC"
    }
    self.queue_stats = {}
+   self.queue_stats_names = {}
    for i=0,self.max_q-1 do
       for k,v in pairs(perqregs) do
          local name = "q" .. i .. "_" .. k
+         table.insert(self.queue_stats_names, name)
          self.queue_stats[name] = self.r[v][i]
          frame[name] = {counter}
       end
@@ -822,9 +831,11 @@ Intel82599.offsets = {
        RSS = 0
    }
 }
-function Intel82599:link_status ()
+do
    local mask = bits { Link_up = 30 }
-   return bit.band(self.r.LINKS(), mask) == mask
+   function Intel82599:link_status ()
+      return bit.band(self.r.LINKS(), mask) == mask
+   end
 end
 function Intel82599:link_speed ()
    local links = self.r.LINKS()
@@ -833,8 +844,11 @@ function Intel82599:link_speed ()
       or  (speed1 and not speed2 and 1000000000) --   1 GbE
       or  1000000                                -- 100 Mb/s
 end
-function Intel82599:promisc ()
-   return band(self.r.FCTRL(), bits{UPE=9}) ~= 0ULL
+do
+   local mask = bits{UPE=9}
+   function Intel82599:promisc ()
+      return band(self.r.FCTRL(), mask) ~= 0ULL
+   end
 end
 function Intel82599:rxbytes  () return self.r.GORC64()   end
 function Intel82599:rxdrop   () return self.r.QPRDC[0]() end
@@ -858,9 +872,11 @@ function Intel82599:init_queue_stats (frame)
       txbytes = "QBTC64",
    }
    self.queue_stats = {}
+   self.queue_stats_names = {}
    for i=0,15 do
       for k,v in pairs(perqregs) do
          local name = "q" .. i .. "_" .. k
+         table.insert(self.queue_stats_names, name)
          self.queue_stats[name] = self.r[v][i]
          frame[name] = {counter}
       end
