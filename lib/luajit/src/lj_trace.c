@@ -373,7 +373,7 @@ static void blacklist_pc(GCproto *pt, BCIns *pc)
 }
 
 /* Penalize a bytecode instruction. */
-static void penalty_pc(jit_State *J, GCproto *pt, BCIns *pc, TraceError e)
+static int penalty_pc(jit_State *J, GCproto *pt, BCIns *pc, TraceError e)
 {
   uint32_t i, val = PENALTY_MIN;
   for (i = 0; i < PENALTY_SLOTS; i++)
@@ -383,7 +383,7 @@ static void penalty_pc(jit_State *J, GCproto *pt, BCIns *pc, TraceError e)
 	    LJ_PRNG_BITS(J, PENALTY_RNDBITS);
       if (val > PENALTY_MAX) {
 	blacklist_pc(pt, pc);  /* Blacklist it, if that didn't help. */
-	return;
+	return(0);
       }
       goto setpenalty;
     }
@@ -392,9 +392,10 @@ static void penalty_pc(jit_State *J, GCproto *pt, BCIns *pc, TraceError e)
   J->penaltyslot = (J->penaltyslot + 1) & (PENALTY_SLOTS-1);
   setmref(J->penalty[i].pc, pc);
 setpenalty:
-  J->penalty[i].val = (uint16_t)val;
+  J->penalty[i].val = val;
   J->penalty[i].reason = e;
   hotcount_set(J2GG(J), pc+1, val);
+  return(val);
 }
 
 /* -- Trace compiler state machine ---------------------------------------- */
@@ -553,6 +554,7 @@ static int trace_abort(jit_State *J)
   lua_State *L = J->L;
   TraceError e = LJ_TRERR_RECERR;
   TraceNo traceno;
+  int penalty = -1;
 
   J->postproc = LJ_POST_NONE;
   lj_mcode_abort(J);
@@ -574,7 +576,7 @@ static int trace_abort(jit_State *J)
       if (e == LJ_TRERR_RETRY)
 	hotcount_set(J2GG(J), startpc+1, 1);  /* Immediate retry. */
       else
-	penalty_pc(J, &gcref(J->cur.startpt)->pt, startpc, e);
+	penalty = penalty_pc(J, &gcref(J->cur.startpt)->pt, startpc, e);
     } else {
       traceref(J, J->exitno)->link = J->exitno;  /* Self-link is blacklisted. */
     }
@@ -604,6 +606,8 @@ static int trace_abort(jit_State *J)
       setintV(L->top++, proto_bcpos(funcproto(fn), pc));
       copyTV(L, L->top++, restorestack(L, errobj));
       copyTV(L, L->top++, &J->errinfo);
+      if (penalty >= 0)
+        setintV(L->top++, penalty);
     );
     /* Drop aborted trace after the vmevent (which may still access it). */
     setgcrefnull(J->trace[traceno]);
