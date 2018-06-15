@@ -166,6 +166,8 @@ local nd_light = require("apps.ipv6.nd_light").nd_light
 local dispatch = require("program.l2vpn.dispatch").dispatch
 local pseudowire = require("program.l2vpn.pseudowire").pseudowire
 local ifmib = require("lib.ipc.shmem.iftable_mib")
+local frag_ipv6 = require("apps.ipv6.fragment").Fragmenter
+local reass_ipv6 = require("apps.ipv6.reassemble").Reassembler
 
 local bridge_types = { flooding = true, learning = true }
 
@@ -364,7 +366,7 @@ function parse_intf(config)
    end
 
    local afs_procs = {
-      ipv6 = function (config, vid, connector, indent)
+      ipv6 = function (config, ipmtu, vid, connector, indent)
          assert(config.address, "Missing address")
          assert(config.next_hop, "Missing next-hop")
          -- FIXME: check fo uniqueness of subnet
@@ -374,6 +376,17 @@ function parse_intf(config)
             print(indent.."    Next-Hop MAC address: "
                      ..config.next_hop_mac)
          end
+
+         local frag = App:new('frag_'..intf.nname..((vid and "_"..vid) or ''),
+                              frag_ipv6,
+                              { mtu = ipmtu, pmtud = true })
+         local reass = App:new('reass_'..intf.nname..((vid and "_"..vid) or ''),
+                               reass_ipv6,
+                               {})
+         connect(frag:connector('output'), connector)
+         connect(connector, frag:connector('south'))
+         connect(frag:connector('north'), reass:connector('input'))
+
          local nd = App:new('nd_'..intf.nname..((vid and "_"..vid) or ''),
                             nd_light,
                             { local_ip  = config.address,
@@ -382,17 +395,19 @@ function parse_intf(config)
                               next_hop = config.next_hop,
                               quiet = true })
          state.nds[nd:name()] = { app = nd, intf = intf }
-         connect_duplex(nd:connector('south'), connector)
+         local nd_south = nd:connector('south')
+         connect(nd_south, frag:connector('input'))
+         connect(reass:connector('output'), nd_south)
          return nd:connector('north')
       end
    }
 
-   local function process_afs (afs, vid, connector, indent)
+   local function process_afs (afs, ipmtu, vid, connector, indent)
       print(indent.."  Address family configuration")
       local config = afs.ipv6
       assert(config, "IPv6 configuration missing")
       print(indent.."    IPv6")
-      return afs_procs.ipv6(config, vid, connector, indent.."  ")
+      return afs_procs.ipv6(config, ipmtu, vid, connector, indent.."  ")
    end
 
    local trunk = config.trunk or { enable = false }
@@ -442,8 +457,10 @@ function parse_intf(config)
          print("        VLAN ID: "..(vid > 0 and vid or "<untagged>"))
          local connector = vmux:connector((vid == 0 and 'native') or 'vlan'..vid)
          if vlan.afs then
-            subintf.connector = process_afs(vlan.afs, vid, connector
-                                            , "    ")
+            local ipmtu = subintf.mtu - 14
+            print("subintf ip mtu", subintf.name, ipmtu)
+            subintf.connector = process_afs(vlan.afs, ipmtu, vid,
+                                            connector, "    ")
             subintf.l3 = true
          else
             subintf.connector = connector
@@ -457,7 +474,10 @@ function parse_intf(config)
    else
       print("    Trunking mode: disabled")
       if config.afs then
-         intf.connector = process_afs(config.afs, nil, intf.connector, "")
+         local ipmtu = intf.mtu - 14
+         print("intf ip mtu", intf.name, ipmtu)
+         intf.connector = process_afs(config.afs, ipmtu, nil,
+                                      intf.connector, "")
          intf.l3 = true
       else
          intf.l3 = false
