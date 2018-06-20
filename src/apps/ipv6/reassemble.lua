@@ -223,9 +223,10 @@ function Reassembler:reassembly_error(entry, icmp_error)
    end
 end
 
-function Reassembler:lookup_reassembly(src_ip, dst_ip, fragment_id)
+function Reassembler:lookup_reassembly(h, fragment_id)
    local key = self.scratch_fragment_key
-   key.src_addr, key.dst_addr, key.fragment_id = src_ip, dst_ip, fragment_id
+   key.src_addr, key.dst_addr, key.fragment_id =
+      h.ipv6.src_ip, h.ipv6.dst_ip, fragment_id
 
    local entry = self.ctab:lookup_ptr(key)
    if entry then return entry end
@@ -247,13 +248,15 @@ end
 
 function Reassembler:handle_fragment(h)
    local fragment = ffi.cast(fragment_header_ptr_t, h.ipv6.payload)
+   -- Note: keep the number of local variables to a minimum when
+   -- calling lookup_reassembly to avoid "register coalescing too
+   -- complex" trace aborts in ctable.
+   local entry = self:lookup_reassembly(h, ntohl(fragment.id))
+   local reassembly = entry.value
    local fragment_offset_and_flags = ntohs(fragment.fragment_offset_and_flags)
    local frag_start = bit.band(fragment_offset_and_flags, fragment_offset_mask)
    local frag_size = ntohs(h.ipv6.payload_length) - fragment_header_len
 
-   local entry = self:lookup_reassembly(h.ipv6.src_ip, h.ipv6.dst_ip,
-                                        ntohl(fragment.id))
-   local reassembly = entry.value
 
    -- Header comes from unfragmentable part of packet 0.
    if frag_start == 0 then
@@ -338,9 +341,11 @@ function Reassembler:push ()
 
    self.incoming_ipv6_fragments_alarm:check()
 
-   local now = self.tsc:stamp()
-   if now - self.scan_tstamp > self.scan_interval then
-      self:expire(now)
+   do
+      local now = self.tsc:stamp()
+      if now - self.scan_tstamp > self.scan_interval then
+         self:expire(now)
+      end
    end
 
    for _ = 1, link.nreadable(input) do
