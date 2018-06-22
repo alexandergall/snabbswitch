@@ -19,10 +19,62 @@
 module(..., package.seeall)
 local ffi = require("ffi")
 local ipv6 = require("lib.protocol.ipv6")
-local filter = require("lib.pcap.filter")
+local ctable = require("lib.ctable")
 
 dispatch = subClass(nil)
 dispatch._name = "IPv6 dispatcher"
+
+local ipv6_header_t = ffi.typeof [[
+/* All values in network byte order.  */
+struct {
+   uint32_t v_tc_fl;               // version:4, traffic class:8, flow label:20
+   uint16_t payload_length;
+   uint8_t  next_header;
+   uint8_t  hop_limit;
+   uint8_t  src_ip[16];
+   uint8_t  dst_ip[16];
+   uint8_t  payload[0];
+} __attribute__((packed))
+]]
+local ipv6_header_ptr_t = ffi.typeof("$*", ipv6_header_t)
+
+local key_t = ffi.typeof[[
+         union {
+            struct {
+               uint8_t src[16];
+               uint8_t dst[16];
+            } addrs;
+            uint8_t bytes [32];
+         } __attribute((packed))]]
+local value_t = ffi.typeof("struct link*")
+
+local function perfect_hash (config)
+   local npws = 0
+   for _, _ in pairs(config) do npws = npws + 1 end
+   local params = {
+      key_type = key_t,
+      value_type = value_t,
+      initial_size = npws * 10,
+      max_occupancy_rate = 0.5,
+   }
+   local ctab
+   local key = key_t()
+   for _ = 1, 10 do
+      ctab = ctable.new(params)
+      for k, addrs in pairs(config) do
+         key.addrs.src = addrs.source
+         key.addrs.dst = addrs.destination
+         ctab:add(key, ffi.cast("struct link *", 0ULL))
+      end
+      if ctab.max_displacement == 0 then
+         break
+      end
+   end
+   if ctab.max_displacement ~= 0 then
+      print("dispatcher: hash is not perfect")
+   end
+   return ctab
+end
 
 -- config: table with mappings of link names to tuples of IPv6 source
 -- and/or destination addresses.
@@ -31,68 +83,56 @@ dispatch._name = "IPv6 dispatcher"
 function dispatch:new (config)
    assert(config, "missing configuration")
    local o = dispatch:superClass().new(self)
-   o._targets = {}
-   for link, address in pairs(config) do
-      assert(type(address) == 'table' and (address.source or address.destination),
-             "incomplete configuration of dispatcher "..link)
-      local match = {}
-      if address.source then
-         table.insert(match, "src host "..ipv6:ntop(address.source))
+   o._pwtable = perfect_hash(config)
+   o._key = key_t()
+   o._config = config
+   o._pw_index = 0
+   return o
+end
+
+function dispatch:link ()
+   for name, link in pairs(self.output) do
+      if type(name) == "string" and name ~= "south" then
+         local addrs = assert(self._config[name])
+         self._key.addrs.src = addrs.source
+         self._key.addrs.dst = addrs.destination
+         local entry = assert(self._pwtable:lookup_ptr(self._key))
+         entry.value = link
       end
-      if address.destination then
-         table.insert(match, "dst host "..ipv6:ntop(address.destination))
-      end
-      local program = table.concat(match, ' and ')
-      local filter, errmsg = filter:new(program)
-      assert(filter, errmsg and ffi.string(errmsg))
-      print("Adding dispatcher for link "..link.." with BPF "..program)
-      table.insert(o._targets, { filter = filter, link = link })
    end
 
-   -- Caches for for various cdata pointer objects to avoid boxing in
-   -- the push() loop
-   o._cache = {
-      p = ffi.new("struct packet *[1]"),
-   }
-   return o
+   self._pw_inputs = {}
+   for name, link in pairs(self.input) do
+      if type(name) == "string" and name ~= "south" then
+         table.insert(self._pw_inputs, link)
+      end
+   end
+   self._npw_inputs = #self._pw_inputs
 end
 
 local empty, full, receive, transmit = link.empty, link.full, link.receive, link.transmit
 function dispatch:push()
-   local output = self.output
-   local targets = self._targets
-   local cache = self._cache
-   local l_in = self.input.south
-   while not empty(l_in) do
-      local p = cache.p
-      p[0] = receive(l_in)
 
-      -- De-multiplex incoming packets to PWs based on the source and
-      -- destination IPv6 addresses.
-      local free = true
-      local i = 1
-      while targets[i] do
-         local t = targets[i]
-         if t.filter:match(p[0].data, p[0].length) then
-            transmit(output[t.link], p[0])
-            free = false
-            break
-         end
-         i = i+1
-      end
-      if free then packet.free(p[0]) end
-   end
-
-   -- Multiplex the packets from all PWs onto the
-   -- south link.
-   local l_out = output.south
-   local i = 1
-   while targets[i] do
-      local t = targets[i]
-      local l_in = self.input[t.link]
-      while not empty(l_in) and not full(l_out) do
+   local l_out = self.output.south
+   for i = 1, self._npw_inputs do
+      local l_in = self._pw_inputs[i]
+      for _ = 1, link.nreadable(l_in) do
          transmit(l_out, receive(l_in))
       end
-      i = i+1
    end
+
+   local l_in = self.input.south
+   for _ = 1, link.nreadable(l_in) do
+      local p = receive(l_in)
+      local h = ffi.cast(ipv6_header_ptr_t, p.data + 14)
+      self._key.addrs.src = h.src_ip
+      self._key.addrs.dst = h.dst_ip
+      local entry = self._pwtable:lookup_ptr(self._key)
+      if entry then
+         transmit(entry.value, p)
+      else
+         packet.free(p)
+      end
+   end
+
 end
