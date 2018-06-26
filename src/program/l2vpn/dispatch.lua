@@ -20,6 +20,7 @@ module(..., package.seeall)
 local ffi = require("ffi")
 local ipv6 = require("lib.protocol.ipv6")
 local ctable = require("lib.ctable")
+local phash = require("program.l2vpn.perfect_hash")
 
 dispatch = subClass(nil)
 dispatch._name = "IPv6 dispatcher"
@@ -48,34 +49,6 @@ local key_t = ffi.typeof[[
          } __attribute((packed))]]
 local value_t = ffi.typeof("struct link*")
 
-local function perfect_hash (config)
-   local npws = 0
-   for _, _ in pairs(config) do npws = npws + 1 end
-   local params = {
-      key_type = key_t,
-      value_type = value_t,
-      initial_size = npws * 10,
-      max_occupancy_rate = 0.5,
-   }
-   local ctab
-   local key = key_t()
-   for _ = 1, 10 do
-      ctab = ctable.new(params)
-      for k, addrs in pairs(config) do
-         key.addrs.src = addrs.source
-         key.addrs.dst = addrs.destination
-         ctab:add(key, ffi.cast("struct link *", 0ULL))
-      end
-      if ctab.max_displacement == 0 then
-         break
-      end
-   end
-   if ctab.max_displacement ~= 0 then
-      print("dispatcher: hash is not perfect")
-   end
-   return ctab
-end
-
 -- config: table with mappings of link names to tuples of IPv6 source
 -- and/or destination addresses.
 -- config = { link1 = { source = source_addr, destination = destination_addr },
@@ -83,7 +56,15 @@ end
 function dispatch:new (config)
    assert(config, "missing configuration")
    local o = dispatch:superClass().new(self)
-   o._pwtable = perfect_hash(config)
+
+   local keys = {}
+   for _, addrs in pairs(config) do
+      local key = key_t()
+      key.addrs.src = addrs.source
+      key.addrs.dst = addrs.destination
+      table.insert(keys, key)
+   end
+   o._pwtable = phash.create(key_t, value_t, keys)
    o._key = key_t()
    o._config = config
    o._pw_index = 0
