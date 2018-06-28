@@ -293,16 +293,19 @@ function Reassembler:handle_fragment(h)
       return self:reassembly_error(entry)
    end
 
-   local max_data_offset = ether_ipv6_header_len + frag_start + frag_size
-   if max_data_offset > ffi.sizeof(reassembly.packet.data) then
-      -- Snabb packets have a maximum size of 10240 bytes.
-      return self:reassembly_error(entry)
+   -- Limit the scope of max_data_offset
+   do
+      local max_data_offset = ether_ipv6_header_len + frag_start + frag_size
+      if max_data_offset > ffi.sizeof(reassembly.packet.data) then
+         -- Snabb packets have a maximum size of 10240 bytes.
+         return self:reassembly_error(entry)
+      end
+      ffi.copy(reassembly.packet.data + reassembly.reassembly_base + frag_start,
+               fragment.payload, frag_size)
+      reassembly.packet.length = math.max(reassembly.packet.length,
+                                          max_data_offset)
+      reassembly.running_length = reassembly.running_length + frag_size
    end
-   ffi.copy(reassembly.packet.data + reassembly.reassembly_base + frag_start,
-            fragment.payload, frag_size)
-   reassembly.packet.length = math.max(reassembly.packet.length,
-                                       max_data_offset)
-   reassembly.running_length = reassembly.running_length + frag_size
 
    if reassembly.final_start == 0 then
       -- Still reassembling.
@@ -313,8 +316,11 @@ function Reassembler:handle_fragment(h)
    elseif not verify_valid_offsets(reassembly) then
       return self:reassembly_error(entry)
    else
-      local header = ffi.cast(ether_ipv6_header_ptr_t, reassembly.packet.data)
-      header.ipv6.payload_length = htons(reassembly.packet.length - ether_ipv6_header_len)
+      -- Limit the scope of header
+      do
+         local header = ffi.cast(ether_ipv6_header_ptr_t, reassembly.packet.data)
+         header.ipv6.payload_length = htons(reassembly.packet.length - ether_ipv6_header_len)
+      end
       return self:reassembly_success(entry)
    end
 end
