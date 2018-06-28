@@ -169,6 +169,7 @@ function Reassembler:new(conf)
    o.scratch_fragment_key = params.key_type()
    o.scratch_reassembly = params.value_type()
    o.next_counter_update = -1
+   o.rqueue = link.new("reassemble_queue")
 
    local scan_time = o.reassembly_timeout / 2
    local scan_chunks = 100
@@ -369,13 +370,19 @@ function Reassembler:push ()
       elseif h.ipv6.next_header == fragment_proto then
          -- A fragment; try to reassemble.
          counter.add(self.shm["in-ipv6-frag-needs-reassembly"])
-         self:handle_fragment(h)
-         packet.free(pkt)
+         link.transmit(self.rqueue, pkt)
       else
          -- Not fragmented; forward it on.
          counter.add(self.shm["in-ipv6-frag-reassembly-unneeded"])
          link.transmit(output, pkt)
       end
+   end
+
+   for _ = 1, link.nreadable(self.rqueue) do
+      local pkt = link.receive(self.rqueue)
+      local h = ffi.cast(ether_ipv6_header_ptr_t, pkt.data)
+      self:handle_fragment(h)
+      packet.free(pkt)
    end
 
    if self.next_counter_update < engine.now() then
