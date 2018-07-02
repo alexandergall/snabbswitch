@@ -141,6 +141,7 @@ function Fragmenter:new(conf)
       o.ptb_filter = filter:new("icmp6 and ip6[40] = 2")
       o.dgram = datagram:new()
       packet.free(o.dgram:packet())
+      o.frag_queue = link.new("fragment_queue")
    end
 
    alarms.add_to_inventory {
@@ -183,6 +184,8 @@ function Fragmenter:fragment_and_transmit(in_h_box, in_pkt_box, mtu)
    local total_payload_size = in_pkt_box[0].length - ether_ipv6_header_len
    local offset, id = 0, self:fresh_fragment_id()
 
+   -- Use explicit boxing to avoid garbage when passing the header and
+   -- packet pointers in case this loop gets compiled first.
    while offset < total_payload_size do
       local in_pkt = in_pkt_box[0]
       local in_h = in_h_box[0]
@@ -269,8 +272,6 @@ function Fragmenter:push ()
    for _ = 1, link.nreadable(input) do
       local pkt = link.receive(input)
       local h = ffi.cast(ether_ipv6_header_ptr_t, pkt.data)
-      pkt_box[0] = pkt
-      h_box[0] = h
       if ntohs(h.ether.type) ~= ether_type_ipv6 then
          -- Not IPv6; forward it on.  FIXME: should make a different
          -- counter here.
@@ -294,10 +295,22 @@ function Fragmenter:push ()
             link.transmit(output, pkt)
          else
             -- Packet doesn't fit into MTU; need to fragment.
-            self:fragment_and_transmit(h_box, pkt_box, mtu)
-            packet.free(pkt_box[0])
+            -- Fragmentation is performed in a separate loop for
+            -- performance reasons. FIXME: assume that there is always
+            -- room to store the MTU at the end of the payload.
+            ffi.cast("uint16_t *", pkt.data + pkt.length)[0] = mtu
+            link.transmit(self.frag_queue, pkt)
          end
       end
+   end
+
+   for _ = 1,  link.nreadable(self.frag_queue) do
+      local pkt  = link.receive(self.frag_queue)
+      local mtu = ffi.cast("uint16_t *", pkt.data + pkt.length)[0]
+      h_box[0] =  ffi.cast(ether_ipv6_header_ptr_t, pkt.data)
+      pkt_box[0] = pkt
+      self:fragment_and_transmit(h_box, pkt_box, mtu)
+      packet.free(pkt_box[0])
    end
 
    if self.pmtud then
