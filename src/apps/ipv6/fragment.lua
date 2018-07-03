@@ -111,6 +111,7 @@ function Fragmenter:new(conf)
    assert(o.mtu >= 1280)
    o.next_fragment_id = deterministic_first_fragment_id or
       math.random(0, 0xffffffff)
+   o.frag_queue = link.new("fragment_queue")
 
    if o.pmtud then
       -- Path MTU Discovery is supported by listening to ICMP
@@ -179,7 +180,7 @@ function Fragmenter:unfragmentable_packet(p)
    -- TODO: Send an error packet.
 end
 
-function Fragmenter:fragment_and_transmit(in_h_box, in_pkt_box, mtu)
+function Fragmenter:fragment_and_transmit(in_pkt_box, in_next_header, mtu)
    local mtu_with_l2 = mtu + ether_header_len
    local total_payload_size = in_pkt_box[0].length - ether_ipv6_header_len
    local offset, id = 0, self:fresh_fragment_id()
@@ -188,7 +189,6 @@ function Fragmenter:fragment_and_transmit(in_h_box, in_pkt_box, mtu)
    -- packet pointers in case this loop gets compiled first.
    while offset < total_payload_size do
       local in_pkt = in_pkt_box[0]
-      local in_h = in_h_box[0]
       local out_pkt = packet.allocate()
       packet.append(out_pkt, in_pkt.data, ether_ipv6_header_len)
       local out_h = ffi.cast(ether_ipv6_header_ptr_t, out_pkt.data)
@@ -207,7 +207,7 @@ function Fragmenter:fragment_and_transmit(in_h_box, in_pkt_box, mtu)
 
       out_h.ipv6.next_header = fragment_proto
       out_h.ipv6.payload_length = htons(out_pkt.length - ether_ipv6_header_len)
-      fragment_h.next_header = in_h.ipv6.next_header
+      fragment_h.next_header = in_next_header
       fragment_h.reserved = 0
       fragment_h.id = htonl(id)
       fragment_h.fragment_offset_and_flags = htons(bit.bor(offset, flags))
@@ -261,7 +261,6 @@ function Fragmenter:expire_pmtu ()
 end
 
 local pkt_box = ffi.new("struct packet *[1]")
-local h_box = ffi.typeof("$[1]", ether_ipv6_header_ptr_t)()
 function Fragmenter:push ()
    local input, output = self.input.input, self.output.output
    local south, north = self.input.south, self.output.north
@@ -296,8 +295,8 @@ function Fragmenter:push ()
          else
             -- Packet doesn't fit into MTU; need to fragment.
             -- Fragmentation is performed in a separate loop for
-            -- performance reasons. FIXME: assume that there is always
-            -- room to store the MTU at the end of the payload.
+            -- performance reasons. FIXME: assumes that there is
+            -- always room to store the MTU at the end of the payload.
             ffi.cast("uint16_t *", pkt.data + pkt.length)[0] = mtu
             link.transmit(self.frag_queue, pkt)
          end
@@ -307,9 +306,10 @@ function Fragmenter:push ()
    for _ = 1,  link.nreadable(self.frag_queue) do
       local pkt  = link.receive(self.frag_queue)
       local mtu = ffi.cast("uint16_t *", pkt.data + pkt.length)[0]
-      h_box[0] =  ffi.cast(ether_ipv6_header_ptr_t, pkt.data)
+      local next_header =
+         ffi.cast(ether_ipv6_header_ptr_t, pkt.data).ipv6.next_header
       pkt_box[0] = pkt
-      self:fragment_and_transmit(h_box, pkt_box, mtu)
+      self:fragment_and_transmit(pkt_box, next_header, mtu)
       packet.free(pkt_box[0])
    end
 
