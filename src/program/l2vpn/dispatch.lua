@@ -18,29 +18,38 @@
 
 module(..., package.seeall)
 local ffi = require("ffi")
-local ipv6 = require("lib.protocol.ipv6")
 local filter = require("lib.pcap.filter")
 
 dispatch = subClass(nil)
 dispatch._name = "IPv6 dispatcher"
+dispatch.config = {
+   afi = { required = true },
+   links = { default = {} },
+}
+
+local afs = {
+   ipv4 = require("lib.protocol.ipv4"),
+   ipv6 = require("lib.protocol.ipv6"),
+}
 
 -- config: table with mappings of link names to tuples of IPv6 source
 -- and/or destination addresses.
 -- config = { link1 = { source = source_addr, destination = destination_addr },
 --            ... }
 function dispatch:new (config)
-   assert(config, "missing configuration")
    local o = dispatch:superClass().new(self)
+   local af = afs[config.afi]
+   assert(af, "Unsupported address family "..config.afi)
    o._targets = {}
-   for link, address in pairs(config) do
+   for link, address in pairs(config.links) do
       assert(type(address) == 'table' and (address.source or address.destination),
              "incomplete configuration of dispatcher "..link)
       local match = {}
       if address.source then
-         table.insert(match, "src host "..ipv6:ntop(address.source))
+         table.insert(match, "src host "..af:ntop(address.source))
       end
       if address.destination then
-         table.insert(match, "dst host "..ipv6:ntop(address.destination))
+         table.insert(match, "dst host "..af:ntop(address.destination))
       end
       local program = table.concat(match, ' and ')
       local filter, errmsg = filter:new(program)

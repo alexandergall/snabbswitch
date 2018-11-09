@@ -232,6 +232,17 @@ function pseudowire:new (conf_in)
    o._logger = lib.logger_new({ module = o._name.." ("..o._conf.name..")" })
    -- Construct templates for the entire encapsulation chain
 
+   local ttype = conf.transport.type
+   local transports = {
+      ipv4 = {
+         ethertype = 0x0800,
+         bpf_type = "ip",
+      },
+      ipv6 = {
+         ethertype = 0x86dd,
+         bpf_type = "ip6",
+      }
+   }
    -- Ethernet header
    --
    -- Use dummy values for the MAC addresses.  The actual addresses
@@ -239,7 +250,7 @@ function pseudowire:new (conf_in)
    -- connects.
    o._ether = ethernet:new({ src = ethernet:pton('00:00:00:00:00:00'),
                              dst = ethernet:pton('00:00:00:00:00:00'),
-                             type = 0x86dd })
+                             type = transports[ttype].ethertype })
 
    -- Tunnel header
    assert(conf.tunnel, "missing tunnel configuration")
@@ -254,8 +265,8 @@ function pseudowire:new (conf_in)
    -- Transport header
    assert(conf.transport, "missing transport configuration")
    o._transport = require("program.l2vpn.transports."..
-                          conf.transport.type):new(conf.transport, o._tunnel.proto,
-                                                o._logger)
+                             ttype):new(conf.transport, o._tunnel.proto,
+                                        o._logger)
    o._decap_header_size = ethernet:sizeof() + o._transport.header:sizeof()
 
    -- We want to avoid copying the encapsulation headers one by one in
@@ -277,7 +288,7 @@ function pseudowire:new (conf_in)
    o._template = template
 
    -- Create a packet filter for the tunnel protocol
-   bpf_program = " ip6 proto "..o._tunnel.proto
+   bpf_program = transports[ttype].bpf_type.." proto "..o._tunnel.proto
    local filter, errmsg = filter:new(bpf_program)
    assert(filter, errmsg and ffi.string(errmsg))
    o._filter = filter
@@ -348,9 +359,16 @@ function pseudowire:new (conf_in)
    mib:register('pwPsnType', 'Integer32', 6) -- other
    mib:register('pwSetUpPriority', 'Integer32', 0) -- unused
    mib:register('pwHoldingPriority', 'Integer32', 0) -- unused
-   mib:register('pwPeerAddrType', 'Integer32', 2) -- IPv6
-   mib:register('pwPeerAddr', { type = 'OctetStr', length = 16},
+   if ttype == "ipv6" then
+      mib:register('pwPeerAddrType', 'Integer32', 2) -- IPv6
+      mib:register('pwPeerAddr', { type = 'OctetStr', length = 16},
                    ffi.string(conf.transport.dst, 16))
+   end
+   if ttype == "ipv4" then
+      mib:register('pwPeerAddrType', 'Integer32', 1) -- IPv4
+      mib:register('pwPeerAddr', { type = 'OctetStr', length = 8},
+                   ffi.string(conf.transport.dst, 8))
+   end
    mib:register('pwAttachedPwIndex', 'Unsigned32', 0)
    mib:register('pwIfIndex', 'Integer32', 0)
    assert(conf.vc_id, "missing VC ID")
