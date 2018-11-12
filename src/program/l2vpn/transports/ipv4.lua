@@ -17,7 +17,6 @@ function transport:new (conf, tunnel_proto, logger)
                          src = conf.src,
                          dst = conf.dst })
    o.header:checksum()
-   o.total_header_size = o.header:sizeof() + tunnel_header:sizeof()
    o.peer = ipv4:ntop(conf.dst)
    o.logger = logger
    return o
@@ -26,7 +25,8 @@ end
 function transport:encapsulate (datagram, tunnel_header)
    local h = self.header
    local old_length = h:total_length()
-   local new_length = self.total_header_size + datagram:packet().length
+   local new_length = self.header:sizeof() + tunnel_header:sizeof() +
+      self.total_header_size + datagram:packet().length
    self.header:total_length(new_length)
    -- Incremental computation of new checksum, see RFC1624
    local old_csum = self.header:header().checksum

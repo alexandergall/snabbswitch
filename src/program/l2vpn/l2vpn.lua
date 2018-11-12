@@ -571,7 +571,7 @@ function parse_config (main_config)
    local vpls_config = main_config.vpls
    assert(vpls_config, "Missing VPLS configuration")
 
-   local dispatchers = {}
+   local dispatchers = { ipv4 = {}, ipv6 = {} }
    local bridge_groups = {}
    for vpls_name, vpls in pairs(vpls_config) do
       local function assert_vpls (cond, msg)
@@ -612,11 +612,11 @@ function parse_config (main_config)
       local tunnel = vpls.tunnel
       local cc = vpls.cc
 
-      local dispatcher = dispatchers[uplink]
+      local dispatcher = dispatchers[vpls.afi][uplink]
       if not dispatcher then
-         dispatcher = App:new('disp_'..normalize_name(uplink),
+         dispatcher = App:new('disp_'..normalize_name(uplink).."_"..vpls.afi,
                               dispatch, { afi = vpls.afi, links = {} })
-         dispatchers[uplink] = dispatcher
+         dispatchers[vpls.afi][uplink] = dispatcher
          local south = dispatcher:connector('south')
          connect_duplex(south, intf.l3[vpls.afi].conn_out)
          intf.l3[vpls.afi].used = true
@@ -658,8 +658,11 @@ function parse_config (main_config)
                         app:connector('uplink'))
          table.insert(bridge_group.pws, app)
       end
-      table.insert(intf.l3[vpls.afi].fragmenter:arg().pmtu_local_addresses,
-                   vpls.address)
+      -- XXX remove once frag for ipv4 is implemented
+      if intf.l3[vpls.afi].fragmenter then
+         table.insert(intf.l3[vpls.afi].fragmenter:arg().pmtu_local_addresses,
+                      vpls.address)
+      end
 
       print("  Creating attachment circuits")
       for name, ac in pairs(vpls.ac) do

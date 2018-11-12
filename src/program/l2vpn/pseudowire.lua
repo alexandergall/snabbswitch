@@ -548,11 +548,17 @@ function pseudowire:new (conf_in)
       -- of the local interface.
       cc.add_tlv(dgram, 'if_description', conf.name)
       cc.add_tlv(dgram, 'vc_id', conf.vc_id)
-      -- Set the IPv6 payload length
+      -- Set length field in transport header
       dgram:new(dgram:packet(), ethernet)
-      local cc_ipv6 = dgram:parse_n(2)
+      local cc_ip = dgram:parse_n(2)
       local _, p_length = dgram:payload()
-      cc_ipv6:payload_length(p_length)
+      if ttype == "ipv6" then
+         cc_ip:payload_length(p_length)
+      end
+      if ttype == "ipv4" then
+         cc_ip:total_length(cc_ip:sizeof() + p_length)
+         cc_ip:checksum()
+      end
       dgram:unparse(2) -- Free parsed protos
       o._cc = {}
 

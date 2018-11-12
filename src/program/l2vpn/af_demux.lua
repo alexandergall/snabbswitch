@@ -8,32 +8,44 @@ af_demux._name = "Address family demultiplexer"
 
 function af_demux:new ()
    local o = af_demux:superClass().new(self)
+   o.discard = link.new("discard")
+   o.type2link = ffi.new("struct link *[65536]", o.discard)
    o.ether = ethernet:new({})
    return o
 end
 
-function af_demux:push ()
-   local from_south = self.input.south
-   local to_v4, to_v6 = self.output.ipv4, self.output.ipv6
-   for _ = 1, link.nreadable(from_south) do
-      local p = link.receive(from_south)
-      local ether = ffi.cast(self.ether._header.ptr_t, p.data)
-      local type = lib.ntohs(ether.ether_type)
-      if type == 0x0800 or type == 0x0806 then
-         link.transmit(to_v4, p)
-      elseif type == 0x86dd then
-         link.transmit(to_v6, p)
-      else
-         packet.free(p)
+function af_demux:link ()
+   for name, l in pairs(self.output) do
+      if type(name) == "string" then
+         if name == "ipv4" then
+            self.type2link[0x0800] = l -- IPv4
+            self.type2link[0x0806] = l -- ARP
+         elseif name == "ipv6" then
+            self.type2link[0x86dd] = l -- IPv6
+         end
       end
    end
+end
 
-   local from_v4, from_v6 = self.input.ipv4, self.input.ipv6
-   local to_south = self.output.south
-   for _ = 1, link.nreadable(from_v4) do
-      link.transmit(to_south, link.receive(from_v4))
+function af_demux:push ()
+   local isouth = self.input.south
+   for _ = 1, link.nreadable(isouth) do
+      local p = link.receive(isouth)
+      local ether = ffi.cast(self.ether._header.ptr_t, p.data)
+      local type = lib.ntohs(ether.ether_type)
+      link.transmit(self.type2link[type], p)
    end
-   for _ = 1, link.nreadable(from_v6) do
-      link.transmit(to_south, link.receive(from_v6))
+
+   for _ = 1, link.nreadable(self.discard) do
+      packet.free(link.receive(self.discard))
+   end
+   
+   local iv4, iv6 = self.input.ipv4, self.input.ipv6
+   local osouth = self.output.south
+   for _ = 1, link.nreadable(iv4) do
+      link.transmit(osouth, link.receive(iv4))
+   end
+   for _ = 1, link.nreadable(iv6) do
+      link.transmit(osouth, link.receive(iv6))
    end
 end
