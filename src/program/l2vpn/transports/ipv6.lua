@@ -21,9 +21,9 @@ function transport:new (conf, tunnel_proto, logger)
    return o
 end
 
-function transport:encapsulate (datagram, tunnel_header)
-   self.header:payload_length(tunnel_header:sizeof()
-                                 + datagram:packet().length)
+function transport:encapsulate (datagram, header, tunnel_header)
+   header:payload_length(tunnel_header:sizeof()
+                            + datagram:packet().length)
 end
 
 return transport

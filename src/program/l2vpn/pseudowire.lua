@@ -280,6 +280,9 @@ function pseudowire:new (conf_in)
    template:push(o._transport.header)
    template:push(o._ether)
    template:new(template:packet(), ethernet) -- Reset the parse stack
+
+   -- Relocation is implicit due to parse_n() re-using the protocol
+   -- objects from the freelists. This seems a little shaky
    o._tunnel.header:free()
    o._transport.header:free()
    o._ether:free()
@@ -616,7 +619,8 @@ function pseudowire:push()
       local datagram = self._dgram:new(p[0], ethernet)
       -- Perform actions on transport and tunnel headers required for
       -- encapsulation
-      self._transport:encapsulate(datagram, self._tunnel.header)
+      self._transport:encapsulate(datagram, self._tunnel.transport,
+                                  self._tunnel.header)
       self._tunnel:encapsulate(datagram)
 
       -- Copy the finished headers into the packet

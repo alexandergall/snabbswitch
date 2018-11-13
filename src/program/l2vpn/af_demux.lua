@@ -34,6 +34,13 @@ function af_demux:push ()
       local ether = ffi.cast(self.ether._header.ptr_t, p.data)
       local type = lib.ntohs(ether.ether_type)
       link.transmit(self.type2link[type], p)
+      -- if type == 0x0800 or type == 0x0806 then
+      --    link.transmit(self.output.ipv4, p)
+      -- elseif type == 0x86dd then
+      --    link.transmit(self.output.ipv6, p)
+      -- else
+      --    packet.free(p)
+      -- end
    end
 
    for _ = 1, link.nreadable(self.discard) do
