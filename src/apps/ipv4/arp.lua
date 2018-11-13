@@ -156,17 +156,28 @@ local arp_config_params = {
    shared_next_mac_key = {},
 }
 
+local function new(self)
+   if not self.self_mac then
+      self.self_mac = random_locally_administered_unicast_mac_address()
+   end
+   if not self.next_mac then
+      assert(self.next_ip, 'ARP needs next-hop IPv4 address to learn next-hop MAC')
+      self.arp_request_pkt = make_arp_request(self.self_mac, self.self_ip, self.next_ip)
+      self.arp_request_interval = 3 -- Send a new arp_request every three seconds.
+   end
+   return self
+end
+
 function ARP:new(conf)
    local o = lib.parse(conf, arp_config_params)
-   if not o.self_mac then
-      o.self_mac = random_locally_administered_unicast_mac_address()
+   return setmetatable(new(o), {__index=ARP})
+end
+
+function ARP:reconfig (conf)
+   for k, v in pairs(lib.parse(conf, arp_config_params)) do
+      self[k] = v
    end
-   if not o.next_mac then
-      assert(o.next_ip, 'ARP needs next-hop IPv4 address to learn next-hop MAC')
-      o.arp_request_pkt = make_arp_request(o.self_mac, o.self_ip, o.next_ip)
-      o.arp_request_interval = 3 -- Send a new arp_request every three seconds.
-   end
-   return setmetatable(o, {__index=ARP})
+   new(self)
 end
 
 function ARP:arp_resolving (ip)
