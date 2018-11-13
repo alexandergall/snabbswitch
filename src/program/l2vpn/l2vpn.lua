@@ -830,7 +830,8 @@ end
 local function create_app_graph ()
    local graph = app_graph.new()
    for name, app in pairs(state.apps) do
-      app_graph.app(graph, app:name(), app:class(), app:arg())
+      -- Copy arg to allow app reconfiguration
+      app_graph.app(graph, app:name(), app:class(), lib.deepcopy(app:arg()))
    end
    for _, linkspec in ipairs(state.links) do
       app_graph.link(graph, linkspec)
