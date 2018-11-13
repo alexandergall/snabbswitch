@@ -603,29 +603,34 @@ function pseudowire:new (conf_in)
    return o
 end
 
-local full, empty, receive, transmit = link.full, link.empty, link.receive, link.transmit
+local full, empty = link.full, link.empty
+local receive, transmit = link.receive, link.transmit
+local nreadable = link.nreadable
 function pseudowire:push()
    local l_in = self.input.ac
    local l_out = self.output.uplink
    local p = self._p
-   while not full(l_out) and not empty(l_in) do
-      p[0] = receive(l_in)
-      if self._cc and not self._forward then
-         -- The PW is marked non-functional by the control channel,
-         -- discard packet
-         packet.free(p[0])
-         return
-      end
-      local datagram = self._dgram:new(p[0], ethernet)
-      -- Perform actions on transport and tunnel headers required for
-      -- encapsulation
-      self._transport:encapsulate(datagram, self._tunnel.transport,
-                                  self._tunnel.header)
-      self._tunnel:encapsulate(datagram)
 
-      -- Copy the finished headers into the packet
-      datagram:push_raw(self._template:data())
-      transmit(l_out, datagram:packet())
+   if self._cc and not self._forward then
+      -- The PW is marked non-functional by the control channel,
+      -- discard all incoming packets
+      for _ = 1, nreadable(l_in) do
+         packet.free(receive(l_in))
+      end
+   else
+      while not full(l_out) and not empty(l_in) do
+         p[0] = receive(l_in)
+         local datagram = self._dgram:new(p[0], ethernet)
+         -- Perform actions on transport and tunnel headers required for
+         -- encapsulation
+         self._transport:encapsulate(datagram, self._tunnel.transport,
+                                     self._tunnel.header)
+         self._tunnel:encapsulate(datagram)
+
+         -- Copy the finished headers into the packet
+         datagram:push_raw(self._template:data())
+         transmit(l_out, datagram:packet())
+      end
    end
 
    l_in = self.input.uplink
