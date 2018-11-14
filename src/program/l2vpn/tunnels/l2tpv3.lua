@@ -1,3 +1,4 @@
+local lib = require("core.lib")
 local l2tpv3 = require("lib.protocol.keyed_ipv6_tunnel")
 local tobit = require("bit").tobit
 
@@ -7,23 +8,23 @@ tunnel.class = l2tpv3
 
 function tunnel:new (conf, use_cc, logger)
    local o = tunnel:superClass().new(self)
-   o.conf = conf
+   o.conf = lib.deepcopy(conf)
    -- The spec for L2TPv3 over IPv6 recommends to set the session ID
    -- to 0xffffffff for the "static 1:1 mapping" scenario.
-   conf.local_session = conf.local_session or 0xffffffff
-   conf.remote_session = conf.remote_session or 0xffffffff
-   conf.local_cookie_baked = l2tpv3:new_cookie(conf.local_cookie)
-   conf.remote_cookie_baked = l2tpv3:new_cookie(conf.remote_cookie)
-   o.header = l2tpv3:new({ session_id = conf.remote_session,
-                           cookie = conf.remote_cookie_baked })
-   o.OutboundVcLabel = conf.local_session
-   o.InboundVcLabel = conf.remote_session
+   o.conf.local_session = o.conf.local_session or 0xffffffff
+   o.conf.remote_session = o.conf.remote_session or 0xffffffff
+   o.conf.local_cookie_baked = l2tpv3:new_cookie(o.conf.local_cookie)
+   o.conf.remote_cookie_baked = l2tpv3:new_cookie(o.conf.remote_cookie)
+   o.header = l2tpv3:new({ session_id = o.conf.remote_session,
+                           cookie = o.conf.remote_cookie_baked })
+   o.OutboundVcLabel = o.conf.local_session
+   o.InboundVcLabel = o.conf.remote_session
    if use_cc then
-      assert(conf.local_session ~= 0xFFFFFFFE and
-             conf.remote_session ~= 0xFFFFFFFE,
+      assert(o.conf.local_session ~= 0xFFFFFFFE and
+             o.conf.remote_session ~= 0xFFFFFFFE,
           "Session ID 0xFFFFFFFE is reserved for the control channel")
       o.cc_header = l2tpv3:new({ session_id = 0xFFFFFFFE,
-                                 cookie = conf.remote_cookie_baked })
+                                 cookie = o.conf.remote_cookie_baked })
    end
    -- Static protcol object used in decapsulate()
    o._proto = l2tpv3:new()

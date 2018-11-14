@@ -400,10 +400,10 @@ function parse_intf(config)
 
          local nd = App:new('nd_'..intf.nname..vid_suffix(vid),
                             nd_light,
-                            { local_ip  = config.address,
-                              local_mac = "00:00:00:00:00:00",
+                            { local_ip  = ipv6:pton(config.address),
+                              local_mac = ethernet:pton("00:00:00:00:00:00"),
                               remote_mac = config.next_hop_mac,
-                              next_hop = config.next_hop,
+                              next_hop = ipv6:pton(config.next_hop),
                               quiet = true })
          state.nds[nd:name()] = { app = nd, intf = intf }
          connect_duplex(nd:connector('south'), connector_in)

@@ -233,6 +233,7 @@ function pseudowire:new (conf_in)
    -- Construct templates for the entire encapsulation chain
 
    local ttype = conf.transport.type
+   o._ttype = ttype
    local transports = {
       ipv4 = {
          ethertype = 0x0800,
@@ -603,8 +604,8 @@ function pseudowire:new (conf_in)
    return o
 end
 
-local full, empty = link.full, link.empty
-local receive, transmit = link.receive, link.transmit
+ local full, empty = link.full, link.empty
+ local receive, transmit = link.receive, link.transmit
 local nreadable = link.nreadable
 function pseudowire:push()
    local l_in = self.input.ac
@@ -618,18 +619,34 @@ function pseudowire:push()
          packet.free(receive(l_in))
       end
    else
-      while not full(l_out) and not empty(l_in) do
-         p[0] = receive(l_in)
-         local datagram = self._dgram:new(p[0], ethernet)
-         -- Perform actions on transport and tunnel headers required for
-         -- encapsulation
-         self._transport:encapsulate(datagram, self._tunnel.transport,
-                                     self._tunnel.header)
-         self._tunnel:encapsulate(datagram)
+      if self._ttype == "ipv4" then
+         for _ = 1, nreadable(l_in) do
+            p[0] = receive(l_in)
+            local datagram = self._dgram:new(p[0], ethernet)
+            -- Perform actions on transport and tunnel headers required for
+            -- encapsulation
+            self._transport:encapsulate(datagram, self._tunnel.transport,
+                                        self._tunnel.header)
+            self._tunnel:encapsulate(datagram)
 
-         -- Copy the finished headers into the packet
-         datagram:push_raw(self._template:data())
-         transmit(l_out, datagram:packet())
+            -- Copy the finished headers into the packet
+            datagram:push_raw(self._template:data())
+            transmit(l_out, datagram:packet())
+         end
+      else
+         for _ = 1, nreadable(l_in) do
+            p[0] = receive(l_in)
+            local datagram = self._dgram:new(p[0], ethernet)
+            -- Perform actions on transport and tunnel headers required for
+            -- encapsulation
+            self._transport:encapsulate(datagram, self._tunnel.transport,
+                                        self._tunnel.header)
+            self._tunnel:encapsulate(datagram)
+
+            -- Copy the finished headers into the packet
+            datagram:push_raw(self._template:data())
+            transmit(l_out, datagram:packet())
+         end
       end
    end
 

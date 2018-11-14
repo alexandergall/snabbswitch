@@ -7,23 +7,26 @@ local C = ffi.C
 
 local transport = subClass(nil)
 
+local function maybe_pton (addr)
+   if type(addr) == "string" then
+      return ipv4:pton(addr)
+   else
+      return addr
+   end
+end
+
 function transport:new (conf, tunnel_proto, logger)
    local o = transport:superClass().new(self)
    assert(conf and conf.src and conf.dst,
           "missing transport configuration")
-   for _, key in ipairs({'src', 'dst'}) do
-      if type(conf[key]) == "string" then
-         conf[key] = ipv4:pton(conf[key])
-      end
-   end
    o.header = ipv4:new({ protocol = tunnel_proto,
                          ttl = conf.hop_limit or 64,
-                         src = conf.src,
-                         dst = conf.dst })
+                         src = maybe_pton(conf.src),
+                         dst = maybe_pton(conf.dst) })
    -- Offsets in units of uint16_t
    o.csum_offset = ffi.offsetof(o.header:header(), 'checksum')/2
    o.length_offset = ffi.offsetof(o.header:header(), 'total_length')/2
-   o.peer = ipv4:ntop(conf.dst)
+   o.peer = ipv4:ntop(maybe_pton(conf.dst))
    o.logger = logger
    return o
 end
