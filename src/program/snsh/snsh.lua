@@ -1,6 +1,7 @@
 -- Use of this source code is governed by the Apache 2.0 license; see COPYING.
 
 module(..., package.seeall)
+require("jit").off()
 
 local lib = require("core.lib")
 local usage = require("program.snsh.README_inc")
