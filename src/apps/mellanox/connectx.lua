@@ -421,6 +421,7 @@ function ConnectX:new (conf)
 
    -- Create separate HCAs to retreive port statistics.  Those
    -- commands must be called asynchronously to reduce latency.
+   local stats_2819_cnt = 0
    self.stats_reqs = {
       {
         start_fn = HCA.get_port_stats_start,
@@ -444,6 +445,37 @@ function ConnectX:new (conf)
            set(stats.txdrop, r.txdrop)
            set(stats.txerrors, r.txerrors)
         end
+      },
+      {
+	 start_fn = HCA.get_port_stats_2819_start,
+	 finish_fn = HCA.get_port_stats_2819_finish,
+	 process_fn = function (r, stats)
+	    if stats_2819_cnt %10 == 0 then
+	       print("RFC2819 stats start")
+	       print("-------------------")
+	       print(string.format("drop_events     %d", tonumber(r.drop_events)))
+	       print(string.format("octets          %d", tonumber(r.octets)))
+	       print(string.format("pkts            %d", tonumber(r.pkts)))
+	       print(string.format("broadcast       %d", tonumber(r.broadcast)))
+	       print(string.format("multicast       %d", tonumber(r.multicast)))
+	       print(string.format("crc_align       %d", tonumber(r.crc_align_errors)))
+	       print(string.format("undersize       %d", tonumber(r.undersize_pkts)))
+	       print(string.format("oversize        %d", tonumber(r.oversize_pkts)))
+	       print(string.format("fragments       %d", tonumber(r.fragments)))
+	       print(string.format("jabbers         %d", tonumber(r.jabbers)))
+	       print(string.format("pkts64          %d", tonumber(r.pkts64)))
+	       print(string.format("pkts65to127     %d", tonumber(r.pkts65to127)))
+	       print(string.format("pkts128to255    %d", tonumber(r.pkts128to255)))
+	       print(string.format("pkts256to511    %d", tonumber(r.pkts256to511)))
+	       print(string.format("pkts512to1023   %d", tonumber(r.pkts512to1023)))
+	       print(string.format("pkts1024to1518  %d", tonumber(r.pkts1024to1518)))
+	       print(string.format("pkts1519to2047  %d", tonumber(r.pkts1519to2047)))
+	       print(string.format("pkts2048to4095  %d", tonumber(r.pkts2048to4095)))
+	       print(string.format("pkts4096to8191  %d", tonumber(r.pkts4096to8191)))
+	       print(string.format("pkts8192to10239 %d", tonumber(r.pkts8192to10239)))
+	    end
+	    stats_2819_cnt = stats_2819_cnt+1
+	 end
       },
       {
         start_fn = HCA.get_port_speed_start,
@@ -1690,6 +1722,62 @@ function HCA:get_port_stats_finish ()
    port_stats.txdrop = self:output64(0x18 + 0x38)
    port_stats.txerrors = self:output64(0x18 + 0x40)
    return port_stats
+end
+
+local port_stats_2819 = {
+   drop_events = 0ULL,
+   octets = 0ULL,
+   pkts = 0ULL,
+   broadcast = 0ULL,
+   multicast = 0ULL,
+   crc_align_errors = 0ULL,
+   undersize_pkts = 0ULL,
+   oversize_pkts = 0ULL,
+   fragments = 0ULL,
+   jabbers = 0ULL,
+   pkts64 = 0ULL,
+   pkts65to127 = 0ULL,
+   pkts128to255 = 0ULL,
+   pkts256to511 = 0ULL,
+   pkts512to1023 = 0ULL,
+   pkts1024to1518 = 0ULL,
+   pkts1519to2047 = 0ULL,
+   pkts2048to4095 = 0ULL,
+   pkts4096to8191 = 0ULL,
+   pkts8192to10239 = 0ULL
+}
+function HCA:get_port_stats_2819_start ()
+   self:command("ACCESS_REGISTER", 0x14, 0x10C)
+      :input("opcode",        0x00, 31, 16, 0x805)
+      :input("opmod",         0x04, 15,  0, 1) -- read
+      :input("register_id",   0x08, 15,  0, PPCNT)
+      :input("local_port",    0x10, 23, 16, 1)
+      :input("grp",           0x10, 5, 0, 0x2) -- RFC 2819
+      :execute_async()
+end
+
+function HCA:get_port_stats_2819_finish ()
+   port_stats_2819.drop_events = self:output64(0x18 + 0x00)
+   port_stats_2819.octets = self:output64(0x18 + 0x08)
+   port_stats_2819.pkts = self:output64(0x18 + 0x10)
+   port_stats_2819.broadcast = self:output64(0x18 + 0x18)
+   port_stats_2819.multicast = self:output64(0x18 + 0x20)
+   port_stats_2819.crc_align_errors = self:output64(0x18 + 0x28)
+   port_stats_2819.undersize_pkts = self:output64(0x18 + 0x30)
+   port_stats_2819.oversize_pkts = self:output64(0x18 + 0x38)
+   port_stats_2819.fragments = self:output64(0x18 + 0x40)
+   port_stats_2819.jabbers = self:output64(0x18 + 0x48)
+   port_stats_2819.pkts64 = self:output64(0x18 + 0x58)
+   port_stats_2819.pkts65to127 = self:output64(0x18 + 0x60)
+   port_stats_2819.pkts128to255 = self:output64(0x18 + 0x68)
+   port_stats_2819.pkts256to511 = self:output64(0x18 + 0x70)
+   port_stats_2819.pkts512to1023 = self:output64(0x18 + 0x78)
+   port_stats_2819.pkts1024to1518 = self:output64(0x18 + 0x80)
+   port_stats_2819.pkts1519to2047 = self:output64(0x18 + 0x88)
+   port_stats_2819.pkts2048to4095 = self:output64(0x18 + 0x90)
+   port_stats_2819.pkts4096to8191 = self:output64(0x18 + 0x98)
+   port_stats_2819.pkts8192to10239 = self:output64(0x18 + 0xA0)
+   return port_stats_2819
 end
 
 function HCA:alloc_q_counter()
