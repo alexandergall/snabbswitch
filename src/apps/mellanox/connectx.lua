@@ -279,8 +279,9 @@ function ConnectX:new (conf)
    local rqlist = {}
    local rqs = {}
 
-   -- List of queue counter IDs (ConnectX5 and up)
-   local counter_set_ids = {}
+   -- List of queue counter IDs and their corresponding queue IDs from
+   -- the configuration (ConnectX5 and up)
+   local q_counters = {}
 
    local usevlan = false
 
@@ -322,7 +323,8 @@ function ConnectX:new (conf)
       local counter_set_id
       if self.mlx > 4 then
          counter_set_id = hca:alloc_q_counter()
-         table.insert(counter_set_ids, counter_set_id)
+         table.insert(q_counters, { counter_id = counter_set_id,
+                                    queue_id   = queue.id })
       end
       -- XXX order check
       cxq.sqn = hca:create_sq(scqn, pd, sq_stride, sendq_size,
@@ -420,6 +422,11 @@ function ConnectX:new (conf)
       txdrop    = {counter},
       txerrors  = {counter},
    }
+   -- Create per-queue drop counters named by the queue identifiers in
+   -- the configuration.
+   for _, queue in ipairs(conf.queues) do
+      frame["rx"..queue.id.."_drop"] = {counter}
+   end
    self.stats = shm.create_frame("pci/"..pciaddress, frame)
 
    -- Create separate HCAs to retreive port statistics.  Those
@@ -465,17 +472,20 @@ function ConnectX:new (conf)
    }
 
    -- Empty for ConnectX4
-   for _, id in ipairs(counter_set_ids) do
+   for _, q_counter in ipairs(q_counters) do
+      local per_q_rxdrop = self.stats["rx"..q_counter.queue_id.."_drop"]
       table.insert(self.stats_reqs,
                    {
                       start_fn = HCA.query_q_counter_start,
                       finish_fn = HCA.query_q_counter_finish,
-                      args = { set_id = id },
+                      args = q_counter.counter_id,
                       process_fn = function(r, stats)
                          -- Incremental update relies on query_q_counter to
                          -- clear the counter after read.
                          counter.set(stats.rxdrop,
                                      counter.read(stats.rxdrop) + r.out_of_buffer)
+                         counter.set(per_q_rxdrop,
+                                     counter.read(per_q_rxdrop) + r.out_of_buffer)
                       end
       })
    end
@@ -1737,13 +1747,13 @@ end
 local q_stats = {
    out_of_buffer = 0ULL
 }
-function HCA:query_q_counter_start (args)
+function HCA:query_q_counter_start (id)
    self:command("QUERY_Q_COUNTER", 0x20, 0x10C)
       :input("opcode",        0x00, 31, 16, 0x773)
    -- Clear the counter after reading. This allows us to
    -- update the rxdrop stat incrementally.
       :input("clear",         0x18, 31,  31, 1)
-      :input("counter_set_id",0x1c,  7,   0, args.set_id)
+      :input("counter_set_id",0x1c,  7,   0, id)
       :execute_async()
 end
 
