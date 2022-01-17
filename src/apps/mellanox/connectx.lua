@@ -283,6 +283,9 @@ function ConnectX:new (conf)
    -- the configuration (ConnectX5 and up)
    local q_counters = {}
 
+   -- Packet/byte counters for entries in the flow table
+   local flow_counters = {}
+
    local usevlan = false
 
    for _, queue in ipairs(conf.queues) do
@@ -351,8 +354,9 @@ function ConnectX:new (conf)
       local flow_group_id = hca:create_flow_group_macvlan(rxtable, NIC_RX, 0, #conf.queues-1, usevlan)
       for _, queue in ipairs(conf.queues) do
          local tir = hca:create_tir_direct(rqs[queue.id], tdomain)
-         hca:set_flow_table_entry_macvlan(rxtable, NIC_RX, flow_group_id, rule, tir,
-                                          ethernet:ptoi(queue.mac), queue.vlan)
+         flow_counters.macvlan =
+            hca:set_flow_table_entry_macvlan(rxtable, NIC_RX, flow_group_id, rule, tir,
+                                             ethernet:ptoi(queue.mac), queue.vlan)
          rule = rule + 1
       end
    else
@@ -378,8 +382,9 @@ function ConnectX:new (conf)
             -- processing truncated packets (e.g. from a port-mirror).
             -- If the header is incomplete, the packet will fall through
             -- to the wildcard match and end up in the first queue.
-            hca:set_flow_table_entry_ip(rxtable, NIC_RX, flow_group_ip,
-                                        index, tir, l3_proto, l4_proto)
+            flow_counters[l3_proto.."_"..l4_proto] =
+               hca:set_flow_table_entry_ip(rxtable, NIC_RX, flow_group_ip,
+                                           index, tir, l3_proto, l4_proto)
             index = index + 1
          end
       end
@@ -387,8 +392,9 @@ function ConnectX:new (conf)
       local flow_group_wildcard =
          hca:create_flow_group_wildcard(rxtable, NIC_RX, index, index)
       local tir_q1 = hca:create_tir_direct(rqlist[1], tdomain)
-      hca:set_flow_table_entry_wildcard(rxtable, NIC_RX,
-                                        flow_group_wildcard, index, tir_q1)
+      flow_counters.wc =
+         hca:set_flow_table_entry_wildcard(rxtable, NIC_RX,
+                                           flow_group_wildcard, index, tir_q1)
    end
    hca:set_flow_table_root(rxtable, NIC_RX)
 
@@ -415,6 +421,18 @@ function ConnectX:new (conf)
       rxbcast   = {counter},
       rxdrop    = {counter},
       rxerrors  = {counter},
+      rx_flow_v4_udp_packets  = {counter},
+      rx_flow_v4_udp_bytes    = {counter},
+      rx_flow_v4_tcp_packets  = {counter},
+      rx_flow_v4_tcp_bytes    = {counter},
+      rx_flow_v6_udp_packets  = {counter},
+      rx_flow_v6_udp_bytes    = {counter},
+      rx_flow_v6_tcp_packets  = {counter},
+      rx_flow_v6_tcp_bytes    = {counter},
+      rx_flow_wc_packets      = {counter},
+      rx_flow_wc_bytes        = {counter},
+      rx_flow_macvlan_packets = {counter},
+      rx_flow_macvlan_bytes   = {counter},
       txbytes   = {counter},
       txpackets = {counter},
       txmcast   = {counter},
@@ -488,6 +506,26 @@ function ConnectX:new (conf)
                                      counter.read(per_q_rxdrop) + r.out_of_buffer)
                       end
       })
+   end
+
+   for flow, counter_id in pairs(flow_counters) do
+      local packets = self.stats["rx_flow_"..flow.."_packets"]
+      local bytes = self.stats["rx_flow_"..flow.."_bytes"]
+      table.insert(self.stats_reqs,
+                   {
+                      start_fn = HCA.query_flow_counter_start,
+                      finish_fn = HCA.query_flow_counter_finish,
+                      process_fn = function(r, stats)
+                         -- Incremental update relies on query_flow_counter to
+                         -- clear the counter after read.
+                         -- Note: while the global rxbytes counter
+                         -- includes the CRC (4 bytes), the per-flow
+                         -- byte counter does not.
+                         counter.set(packets, counter.read(packets) + r.packets)
+                         counter.set(bytes, counter.read(bytes) + r.bytes)
+                      end,
+                      args = counter_id
+                   })
    end
 
    for _, req in ipairs(self.stats_reqs) do
@@ -1439,18 +1477,22 @@ end
 -- Set a "wildcard" flow table entry that does not match on any fields.
 function HCA:set_flow_table_entry_wildcard (table_id, table_type, group_id,
                                             flow_index, tir)
-   self:command("SET_FLOW_TABLE_ENTRY", 0x40 + 0x300, 0x0C)
+   local counter = self:alloc_flow_counter()
+   self:command("SET_FLOW_TABLE_ENTRY", 0x40 + 0x308, 0x0C)
       :input("opcode",       0x00,         31, 16, 0x936)
       :input("opmod",        0x04,         15,  0, 0) -- new entry
       :input("table_type",   0x10,         31, 24, table_type)
       :input("table_id",     0x14,         23,  0, table_id)
       :input("flow_index",   0x20,         31,  0, flow_index)
       :input("group_id",     0x40 + 0x04,  31,  0, group_id)
-      :input("action",       0x40 + 0x0C,  15,  0, 4) -- action = FWD_DST
+      :input("action",       0x40 + 0x0C,  15,  0, 12) -- action = FWD_DST | COUNT
       :input("dest_list_sz", 0x40 + 0x10,  23,  0, 1) -- destination list size
+      :input("cntr_list_sz", 0x40 + 0x14,  23,  0, 1)
       :input("dest_type",    0x40 + 0x300, 31, 24, 2)
       :input("dest_id",      0x40 + 0x300, 23,  0, tir)
+      :input("counter_id",   0x40 + 0x308, 15,  0, counter)
       :execute()
+   return counter
 end
 
 -- Create a flow group that inspects the ethertype and protocol fields.
@@ -1483,20 +1525,24 @@ function HCA:set_flow_table_entry_ip (table_id, table_type, group_id,
    }
    local type = assert(ethertypes[l3_proto], "invalid l3 proto")
    local proto = assert(l4_protos[l4_proto], "invalid l4 proto")
-   self:command("SET_FLOW_TABLE_ENTRY", 0x40 + 0x300, 0x0C)
+   local counter = self:alloc_flow_counter()
+   self:command("SET_FLOW_TABLE_ENTRY", 0x40 + 0x308, 0x0C)
       :input("opcode",       0x00,         31, 16, 0x936)
       :input("opmod",        0x04,         15,  0, 0) -- new entry
       :input("table_type",   0x10,         31, 24, table_type)
       :input("table_id",     0x14,         23,  0, table_id)
       :input("flow_index",   0x20,         31,  0, flow_index)
       :input("group_id",     0x40 + 0x04,  31,  0, group_id)
-      :input("action",       0x40 + 0x0C,  15,  0, 4) -- action = FWD_DST
+      :input("action",       0x40 + 0x0C,  15,  0, 12) -- action = FWD_DST | COUNT
       :input("dest_list_sz", 0x40 + 0x10,  23,  0, 1) -- destination list size
+      :input("cntr_list_sz", 0x40 + 0x14,  23,  0, 1)
       :input("match_ether",  0x40 + 0x40 + 0x04, 15, 0, type)
       :input("match_proto",  0x40 + 0x40 + 0x10, 31, 24, proto)
       :input("dest_type",    0x40 + 0x300, 31, 24, 2) -- TIR
       :input("dest_id",      0x40 + 0x300, 23,  0, tir)
+      :input("counter_id",   0x40 + 0x308, 15,  0, counter)
       :execute()
+   return counter
 end
 
 -- Create a DMAC+VLAN flow group.
@@ -1520,21 +1566,55 @@ end
 
 -- Set a DMAC+VLAN flow table rule.
 function HCA:set_flow_table_entry_macvlan (table_id, table_type, group_id, flow_index, tir, dmac, vlanid)
-   self:command("SET_FLOW_TABLE_ENTRY", 0x40 + 0x300, 0x0C)
+   local counter = self:alloc_flow_counter()
+   self:command("SET_FLOW_TABLE_ENTRY", 0x40 + 0x308, 0x0C)
       :input("opcode",       0x00,         31, 16, 0x936)
       :input("opmod",        0x04,         15,  0, 0) -- new entry
       :input("table_type",   0x10,         31, 24, table_type)
       :input("table_id",     0x14,         23,  0, table_id)
       :input("flow_index",   0x20,         31,  0, flow_index)
       :input("group_id",     0x40 + 0x04,  31,  0, group_id)
-      :input("action",       0x40 + 0x0C,  15,  0, 4) -- action = FWD_DST
+      :input("action",       0x40 + 0x0C,  15,  0, 12) -- action = FWD_DST | COUNT
       :input("dest_list_sz", 0x40 + 0x10,  23,  0, 1) -- destination list size
+      :input("cntr_list_sz", 0x40 + 0x14,  23,  0, 1)
       :input("dmac0",        0x40 + 0x48,  31,  0, math.floor(dmac/2^16))
       :input("dmac1",        0x40 + 0x4C,  31, 16, band(dmac, 0xFFFF))
       :input("vlan",         0x40 + 0x4C,  11,  0, vlanid or 0)
       :input("dest_type",    0x40 + 0x300, 31, 24, 2)
       :input("dest_id",      0x40 + 0x300, 23,  0, tir)
+      :input("counter_id",   0x40 + 0x308, 15,  0, counter)
       :execute()
+   return counter
+end
+
+function HCA:alloc_flow_counter ()
+   self:command("ALLOC_FLOW_COUNTER", 0x0C, 0x0C)
+      :input("opcode",       0x00,         31, 16, 0x939)
+      :execute()
+   local counter_id = self:output(0x08, 15, 0)
+   return counter_id
+end
+
+function HCA:query_flow_counter_start (counter_id)
+   self:command("QUERY_FLOW_COUNTER", 0x1C, 0x1C)
+      :input("opcode",       0x00, 31, 16, 0x93B)
+      :input("clear",        0x18, 31, 31, 1) -- clear after read
+      :input("counter_id",   0x1C, 15,  0, counter_id)
+      :execute_async()
+end
+
+local flow_stats = {
+   packets = 0ULL,
+   bytes   = 0ULL
+}
+function HCA:query_flow_counter_finish (counter_id)
+   local packets_hi = self:output(0x10, 31 ,0)
+   local packets_lo = self:output(0x14, 31 ,0)
+   local bytes_hi   = self:output(0x18, 31, 0)
+   local bytes_lo   = self:output(0x1C, 31, 0)
+   flow_stats.packets = self:output64(0x10)
+   flow_stats.bytes   = self:output64(0x18)
+   return flow_stats
 end
 
 ---------------------------------------------------------------
