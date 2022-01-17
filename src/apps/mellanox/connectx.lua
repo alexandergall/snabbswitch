@@ -1129,7 +1129,13 @@ IO.__index = IO
 driver = IO
 
 function IO:new (conf)
-   local self = setmetatable({}, self)
+   local self = setmetatable(
+      {
+         shm = {
+            rxpackets = {counter},
+            txpackets = {counter}
+         }
+      }, self)
 
    local pciaddress = pci.qualified(conf.pciaddress)
    local queue = conf.queue
@@ -1160,8 +1166,8 @@ function IO:new (conf)
          shm.alias(self.backlink, shmpath)
          cxq = shm.open(shmpath, cxq_t)
          if sync.cas(cxq.state, FREE, IDLE) then
-            sq = SQ:new(cxq, mmio)
-            rq = RQ:new(cxq)
+            sq = SQ:new(cxq, mmio, self.shm.txpackets)
+            rq = RQ:new(cxq, self.shm.rxpackets)
          else
             close()             -- Queue was not FREE.
          end
@@ -1216,7 +1222,7 @@ end
 
 RQ = {}
 
-function RQ:new (cxq)
+function RQ:new (cxq, rxpackets)
    local rq = {}
 
    local mask = cxq.rqsize - 1
@@ -1254,10 +1260,11 @@ function RQ:new (cxq)
 
    function rq:receive (l)
       local limit = engine.pull_npackets
-      while have_input() and limit > 0 and not link.full(l) do
+      local npackets = 0
+      while have_input() and npackets < limit and not link.full(l) do
          -- Find the next completion entry.
          local c = cxq.rcq[cxq.next_rx_cqeid]
-         limit = limit - 1
+         npackets = npackets + 1
          -- Advance to next completion.
          -- Note: assumes sqsize == cqsize
          cxq.next_rx_cqeid = slot(cxq.next_rx_cqeid + 1)
@@ -1300,6 +1307,7 @@ function RQ:new (cxq)
             error(("Unexpected CQE opcode: %d (0x%x)"):format(opcode, opcode))
          end
       end
+      counter.add(rxpackets, npackets)
    end
 
    function rq:ring_doorbell ()
@@ -1314,7 +1322,7 @@ end
 
 SQ = {}
 
-function SQ:new (cxq, mmio)
+function SQ:new (cxq, mmio, txpackets)
    local sq = {}
    -- Cast pointers to expected types
    local mmio = ffi.cast("uint8_t*", mmio)
@@ -1332,7 +1340,9 @@ function SQ:new (cxq, mmio)
    function sq:transmit (l)
       local start_wqeid = cxq.next_tx_wqeid
       local next_slot = slot(start_wqeid)
+      local npackets = 0
       while not link.empty(l) and cxq.tx[next_slot] == nil do
+         npackets = npackets + 1
          local p = link.receive(l)
          local wqe = cxq.swq[next_slot]
          -- Store packet pointer so that we can free it later
@@ -1360,6 +1370,7 @@ function SQ:new (cxq, mmio)
          cxq.next_tx_wqeid = cxq.next_tx_wqeid + 1
          next_slot = slot(cxq.next_tx_wqeid)
       end
+      counter.add(txpackets, npackets)
       -- Ring the doorbell if we enqueued new packets.
       if cxq.next_tx_wqeid ~= start_wqeid then
          local current_packet = slot(cxq.next_tx_wqeid + cxq.sqsize-1)
