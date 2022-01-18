@@ -153,9 +153,8 @@ local cxq_t = ffi.typeof([[
 
     // Receive state
     struct packet *rx[64*1024]; // packets queued for receive
-    uint16_t next_rx_wqeid;           // work queue ID for next receive descriptor
-    uint16_t next_rx_cqeid;          // completion queue ID of next completed packet
-    int rx_mine;                // CQE ownership value that means software-owned
+    uint16_t next_rx_wqeid;     // work queue ID for next receive descriptor
+    uint32_t rx_cqcc;           // Consumer counter of RX CQ
   }
 ]])
 
@@ -1290,26 +1289,31 @@ function RQ:new (cxq, rxpackets)
       end
    end
 
+   local log_rqsize = log2size(cxq.rqsize)
    local function have_input ()
-      local c = cxq.rcq[cxq.next_rx_cqeid]
+      local c = cxq.rcq[slot(cxq.rx_cqcc)]
       local owner = bit.band(1, c.u8[0x3F])
-      return owner == cxq.rx_mine
+      -- The value of the ownership flag that indicates owned by SW for
+      -- the current consumer counter is flipped every time the counter
+      -- wraps around the receive queue.
+      local sw = band(shr(cxq.rx_cqcc, log_rqsize), 1)
+      return owner == sw
    end
 
    function rq:receive (l)
       local limit = engine.pull_npackets
       local npackets = 0
       while have_input() and npackets < limit and not link.full(l) do
+         -- NOTE: the mlx5 driver uses a memory barrier at this point
+         -- with the comment "ensure cqe content is read after cqe ownership bit"
+         -- Do we need to do this here?
+
          -- Find the next completion entry.
-         local c = cxq.rcq[cxq.next_rx_cqeid]
+         local c = cxq.rcq[slot(cxq.rx_cqcc)]
          npackets = npackets + 1
          -- Advance to next completion.
          -- Note: assumes sqsize == cqsize
-         cxq.next_rx_cqeid = slot(cxq.next_rx_cqeid + 1)
-         -- Toggle the ownership value if the CQ wraps around.
-         if cxq.next_rx_cqeid == 0 then
-            cxq.rx_mine = (cxq.rx_mine + 1) % 2
-         end
+         cxq.rx_cqcc = cxq.rx_cqcc + 1
          -- Decode the completion entry.
          local opcode = shr(c.u8[0x3F], 4)
          local len = bswap(c.u32[0x2C/4])
