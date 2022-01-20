@@ -1185,7 +1185,9 @@ function IO:new (conf)
       {
          shm = {
             rxpackets = {counter},
-            txpackets = {counter}
+            txpackets = {counter},
+            cqes      = {counter},
+            cqes_compressed = {counter},
          }
       }, self)
 
@@ -1218,8 +1220,8 @@ function IO:new (conf)
          shm.alias(self.backlink, shmpath)
          cxq = shm.open(shmpath, cxq_t)
          if sync.cas(cxq.state, FREE, IDLE) then
-            sq = SQ:new(cxq, mmio, self.shm.txpackets)
-            rq = RQ:new(cxq, self.shm.rxpackets)
+            sq = SQ:new(cxq, mmio, self.shm)
+            rq = RQ:new(cxq, self.shm)
          else
             close()             -- Queue was not FREE.
          end
@@ -1274,8 +1276,11 @@ end
 
 RQ = {}
 
-function RQ:new (cxq, rxpackets)
+function RQ:new (cxq, shm)
    local rq = {}
+   local rxpackets = shm.rxpackets
+   local cqes = shm.cqes
+   local cqes_compressed = shm.cqes_compressed
 
    local mask = cxq.rqsize - 1
    -- Return the queue slot for the given consumer counter for either
@@ -1374,6 +1379,7 @@ function RQ:new (cxq, rxpackets)
       local cqd = cxq.rx_cq_decomp
       -- byte_count is the number of cqes in this compression block
       cqd.count = bswap(cqe.u32[0x2C/4])
+      counter.add(cqes_compressed, cqd.count)
       -- The compressed cqes have successive indexes into the RX
       -- queue. The initial value is that of the wqe_counter field of
       -- the cqe that starts the compression block.
@@ -1451,6 +1457,7 @@ function RQ:new (cxq, rxpackets)
                goto DECOMPRESS
             else
                -- Regular CQE
+               counter.add(cqes)
                npackets = npackets + 1
                local len = bswap(cqe.u32[0x2C/4])
                local wqeid = shr(bswap(cqe.u32[0x3C/4]), 16)
@@ -1501,8 +1508,10 @@ end
 
 SQ = {}
 
-function SQ:new (cxq, mmio, txpackets)
+function SQ:new (cxq, mmio, shm)
    local sq = {}
+   local txpackets = shm.txpackets
+
    -- Cast pointers to expected types
    local mmio = ffi.cast("uint8_t*", mmio)
    cxq.bf_next = ffi.cast("uint64_t*", mmio + (cxq.uar * 4096) + 0x800)
