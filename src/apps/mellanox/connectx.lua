@@ -210,15 +210,36 @@ local mlx_types = {
    ["0x1019" ] = 5, -- ConnectX5
 }
 
-function ConnectX:new (conf)
+local global_config = {
+   pciaddress   = { required = true },
+   sendq_size   = { default  = 1024 },
+   recvq_size   = { default  = 1024 },
+   mtu          = { default  = 9500 },
+   fc_rx_enable = { default  = false },
+   fc_tx_enable = { default  = false },
+   queues       = { required = true },
+   macvlan      = { default  = false },
+}
+local queue_config = {
+   id   = { required = true },
+   vlan = { default = nil },
+}
+function ConnectX:new (arg)
    local self = setmetatable({}, self)
+   local conf = lib.parse(arg, global_config)
+   local queues = {}
+   for _, arg_queue in ipairs(arg.queues) do
+      assert(type(arg_queue) == "table")
+      table.insert(queues, lib.parse(arg_queue, queue_config))
+   end
+
    local pciaddress = pci.qualified(conf.pciaddress)
    local device_info = pci.device_info(pciaddress)
    self.mlx = assert(mlx_types[device_info.device],
                      "Unsupported device "..device_info.device)
 
-   local sendq_size = conf.sendq_size or 1024
-   local recvq_size = conf.recvq_size or 1024
+   local sendq_size = conf.sendq_size
+   local recvq_size = conf.recvq_size
 
    -- XXX Config says whether to setup queues with MAC+VLAN
    -- dispatching ("VMDq") or to simply hash uniformly over them ("RSS").
@@ -228,7 +249,7 @@ function ConnectX:new (conf)
    -- appropriate flow table.
    local macvlan = conf.macvlan
 
-   local mtu = conf.mtu or 9500
+   local mtu = conf.mtu
 
    -- Perform a hard reset of the device to bring it into a blank state.
    --
@@ -273,8 +294,7 @@ function ConnectX:new (conf)
    hca:set_port_mtu(mtu)
    hca:modify_nic_vport_context(mtu, true, true, true)
 
-   hca:set_port_flow_control(conf.fc_rx_enable == nil and false or conf.fc_rx_enable,
-                             conf.fc_tx_enable == nil and false or conf.fc_tx_enable)
+   hca:set_port_flow_control(conf.fc_rx_enable, conf.fc_tx_enable)
 
    -- Create basic objects that we need
    --
