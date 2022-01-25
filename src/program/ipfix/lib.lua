@@ -19,7 +19,8 @@ local template   = require("apps.ipfix.template")
 local rss        = require("apps.rss.rss")
 local ifmib      = require("lib.ipc.shmem.iftable_mib")
 local Transmitter = require("apps.interlink.transmitter")
-
+local Receiver   = require("apps.interlink.receiver")
+local Sink       = require("apps.basic.basic_apps").Sink
 
 local ifmib_dir = '/ifmib'
 
@@ -136,6 +137,7 @@ probe_config = {
    output = { required = true },
    input_type = { default = nil },
    input = { default = nil },
+   rebalance_link = { default = nil },
    exporter_mac = { default = nil },
    -- Passed on to IPFIX app
    active_timeout = { default = nil },
@@ -157,7 +159,8 @@ probe_config = {
    instance = { default = 1 },
    add_packet_metadata = { default = true },
    log_date = { default = false },
-   scan_protection = { default = {} }
+   scan_protection = { default = {} },
+   rebalance = { default = false }
 }
 
 function configure_graph (arg, in_graph)
@@ -201,7 +204,8 @@ function configure_graph (arg, in_graph)
                instance = config.instance,
                add_packet_metadata = config.add_packet_metadata,
                log_date = config.log_date,
-               scan_protection = config.scan_protection }
+               scan_protection = config.scan_protection,
+               rebalance = config.rebalance_link and true or false }
    end
 
    local ipfix_config = mk_ipfix_config()
@@ -214,6 +218,9 @@ function configure_graph (arg, in_graph)
       local in_name = "in"
       if config.input_type == "interlink" then
          in_name = config.input
+         -- Explicit packet re-balancing
+         app_graph.app(graph, config.rebalance_link, Transmitter)
+         app_graph.link(graph, ipfix_name..".rebalance -> "..config.rebalance_link..".input")
       end
       app_graph.app(graph, in_name, unpack(in_app))
       app_graph.link(graph, in_name ..".".. in_link.output .. " -> "
@@ -417,6 +424,11 @@ function run_rss(config, inputs, outputs, duration, busywait, cpu, jit, log_date
          app_graph.app(graph, output.link_name, Transmitter)
          app_graph.link(graph, "rss."..output.link_name.." -> "
                            ..output.link_name..".input")
+         -- Explicit packet re-balancing
+         local sink = "sink_"..output.link_name
+         app_graph.app(graph, sink, Sink)
+         app_graph.app(graph, output.rebalance_link, Receiver)
+         app_graph.link(graph, output.rebalance_link..".output -> "..sink..".input")
       else
          -- Keys
          --   link_name  name of the link

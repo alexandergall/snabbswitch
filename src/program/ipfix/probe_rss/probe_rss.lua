@@ -270,6 +270,24 @@ local function create_workers (probe_config, duration, busywait, jit, logger, lo
                iconfig.input_type = "interlink"
                iconfig.input = rss_link
 
+	       -- Set up explicit packet re-balancing. Packets
+	       -- received from or sent to interlinks need to be
+	       -- redistributed to all processes in the group. The
+	       -- regulat procedure uses a "group free-list" for this
+	       -- purpose, which is shared by all processes. A lock is
+	       -- required to moderate access to the list which can
+	       -- incur long latencies in the breathe loop. This will
+	       -- cause packet drops if there is not enough room to
+	       -- buffer incoming packets.  The problem gets worse the
+	       -- more processes are competing for the lock.
+	       --
+	       -- As a workaround, we avoid the group free-list by
+	       -- sending packets back to the process that allocated
+	       -- it via a separate interlink instead of freeing them.
+	       local rebalance_link = "rebalance_"..rss_link
+	       output.rebalance_link = rebalance_link
+	       iconfig.rebalance_link = rebalance_link
+
                local jit =  override_jit(jit, instance.jit, od)
 
                local cpu = cpu_for_node(instance.pin_cpu)

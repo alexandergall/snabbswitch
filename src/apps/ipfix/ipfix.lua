@@ -291,7 +291,7 @@ function FlowSet:id()
    return string.format("%s(#%d)", self.template.name, self.template.id)
 end
 
-function FlowSet:record_flows(timestamp)
+function FlowSet:record_flows(timestamp, rebalance_link)
    local entry = self.scratch_entry
    timestamp = to_milliseconds(timestamp)
    for i=1,link.nreadable(self.incoming) do
@@ -304,7 +304,11 @@ function FlowSet:record_flows(timestamp)
       else
          self.template:accumulate(lookup_result, entry, pkt)
       end
-      packet.free(pkt)
+      if rebalance_link then
+         link.transmit(rebalance_link, pkt)
+      else
+         packet.free(pkt)
+      end
    end
 end
 
@@ -433,8 +437,8 @@ function FlowSet:suppress_flow(flow_entry, timestamp)
          local fps = aggr.flow_count/interval
          local drop_interval = (timestamp - aggr.tstamp_drop_start)/1000
          if (fps >= config.threshold_rate) then
-	    local aggr_ppf = aggr.packets/aggr.flow_count
-	    local aggr_bpp = aggr.octets/aggr.packets
+            local aggr_ppf = aggr.packets/aggr.flow_count
+            local aggr_bpp = aggr.octets/aggr.packets
             if aggr.suppress == 0 then
                self.template.logger:log(
                   string.format("Flow rate threshold exceeded from %s: "..
@@ -477,9 +481,9 @@ function FlowSet:suppress_flow(flow_entry, timestamp)
             flow_entry.value.octetDeltaCount
       end
       if config.drop and aggr.suppress == 1 then
-	 -- NB: this rate-limiter applies to flows from *all*
-	 -- aggregates, while the threshold rate applies to each
-	 -- aggregate individually.
+         -- NB: this rate-limiter applies to flows from *all*
+         -- aggregates, while the threshold rate applies to each
+         -- aggregate individually.
          if self.sp.export_rate_tb:take(1) then
             aggr.exports = aggr.exports + 1
             return false
@@ -590,7 +594,10 @@ local ipfix_config_params = {
    -- process
    instance = { default = 1 },
    add_packet_metadata = { default = true },
-   log_date = { default = true }
+   log_date = { default = true },
+   -- With explicit re-balancing, packets are sent to the output link
+   -- named "rebalance" instead of being freed.
+   rebalance = { default = false }
 }
 
 local scan_protection_params = {
@@ -683,7 +690,7 @@ function IPFIX:new(config)
    local flow_set_args = { mtu = config.mtu - total_header_len,
                            version = config.ipfix_version,
                            cache_size = config.cache_size,
-			   max_load_factor = config.max_load_factor,
+                           max_load_factor = config.max_load_factor,
                            scan_protection = lib.parse(config.scan_protection,
                                                        scan_protection_params),
                            idle_timeout = config.idle_timeout,
@@ -798,10 +805,17 @@ function IPFIX:push(input)
 
    counter.add(self.shm.ignored_packets, nreadable)
    for _ = 1, nreadable do
-      packet.free(link.receive(input))
+      local p = link.receive(input)
+      if self.rebalance then
+         link.transmit(self.output.rebalance, p)
+      else
+         packet.free(p)
+      end
    end
 
-   for _,set in ipairs(flow_sets) do set:record_flows(timestamp) end
+   for _,set in ipairs(flow_sets) do 
+      set:record_flows(timestamp, self.output.rebalance)
+   end
 
 end
 
