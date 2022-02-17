@@ -16,6 +16,7 @@ local counter  = require("core.counter")
 require("core.packet_h")
 
 local group_freelist = require("core.group_freelist")
+local min = math.min
 
 local packet_t = ffi.typeof("struct packet")
 local packet_ptr_t = ffi.typeof("struct packet *")
@@ -98,20 +99,23 @@ end
 
 -- Return borrowed packets to group freelist.
 function rebalance_freelists ()
-   local to_return = freelist_nfree(packets_fl) - packets_allocated
-   if to_return > 0 and group_fl then
-      local head = group_freelist.start_add(group_fl, to_return)
-      for i=0, to_return-1 do
-         group_freelist.add(group_fl, head, i, freelist_remove(packets_fl))
+   if group_fl then
+      while freelist_nfree(packets_fl) > packets_allocated do
+         local to_return = min(2048, freelist_nfree(packets_fl) - packets_allocated)
+         local head = group_freelist.start_add(group_fl, to_return)
+         for i=0, to_return-1 do
+            group_freelist.add(group_fl, head, i, freelist_remove(packets_fl))
+         end
+         group_freelist.finish_add(group_fl, head, to_return)
       end
-      group_freelist.finish_add(group_fl, head, to_return)
    end
 end
 
 -- Reclaim packets from group freelist.
 function reclaim_step ()
    if group_fl then
-      local tail, to_reclaim = group_freelist.start_remove(group_fl, packets_allocated)
+      local step = min(2048, packets_allocated)
+      local tail, to_reclaim = group_freelist.start_remove(group_fl, step)
       if to_reclaim > 0 then
          for i=0, to_reclaim-1 do
             freelist_add(packets_fl, group_freelist.remove(group_fl, tail, i))
