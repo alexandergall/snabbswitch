@@ -45,12 +45,10 @@ local function mask (i)
 end
 
 function start_add (fl, n)
-   while true do
-      local head = fl.h_add[0]
-      assert(MAX-mask(head - fl.t_add[0]) >= n, "group freelist overflow")
-      if sync.cas(fl.h_add, head, mask(head + n)) then
-         return head
-      end
+   local head = fl.h_add[0]
+   assert(MAX-mask(head - fl.t_add[0]) >= n, "group freelist overflow")
+   if sync.cas(fl.h_add, head, mask(head + n)) then
+      return head
    end
 end
 
@@ -66,12 +64,10 @@ function finish_add (fl, head, n)
 end
 
 function start_remove (fl, n)
-   while true do
-      local tail = fl.t_remove[0]
-      local n = min(n, mask(fl.h_remove[0] - tail))
-      if n == 0 or sync.cas(fl.t_remove, tail, mask(tail + n)) then
-         return tail, n
-      end
+   local tail = fl.t_remove[0]
+   local n = min(n, mask(fl.h_remove[0] - tail))
+   if n > 0 and sync.cas(fl.t_remove, tail, mask(tail + n)) then
+      return tail, n
    end
 end
 
@@ -91,11 +87,11 @@ end
 
 function selftest ()
    local fl = freelist_create("test_freelist")
-   assert(select(2, start_remove(fl, 1)) == 0) -- empty
+   assert(not start_remove(fl, 1)) -- empty
 
    local w1 = start_add(fl, 1000)
    local w2 = start_add(fl, 3700)
-   assert(select(2, start_remove(fl, 1)) == 0) -- empty
+   assert(not start_remove(fl, 1)) -- empty
    assert(not finish_add1(fl, w2, 3700))
    assert(finish_add1(fl, w1, 1000))
    assert(finish_add1(fl, w2, 3700))
@@ -106,7 +102,7 @@ function selftest ()
    assert(not finish_remove1(fl, r2, nr2))
    assert(finish_remove1(fl, r1, nr1))
    assert(finish_remove1(fl, r2, nr2))
-   assert(select(2, start_remove(fl, 1)) == 0) -- empty
+   assert(not start_remove(fl, 1)) -- empty
 
    local w3 = start_add(fl, 12345)
    local w4 = start_add(fl, 54321)
@@ -119,7 +115,7 @@ function selftest ()
    assert(not finish_remove1(fl, r4, nr4))
    assert(finish_remove1(fl, r3, nr3))
    assert(finish_remove1(fl, r4, nr4))
-   assert(select(2, start_remove(fl, 1)) == 0) -- empty
+   assert(not start_remove(fl, 1)) -- empty
 
    local w5 = start_add(fl, MAX)
    assert(not pcall(start_add, fl, 1)) -- full
@@ -127,8 +123,8 @@ function selftest ()
    local r5, nr5 = start_remove(fl, MAX)
    assert(r5 and nr5 == MAX)
    assert(not pcall(start_add, fl, 1)) -- full
-   assert(select(2, start_remove(fl, 1)) == 0) -- empty
+   assert(not start_remove(fl, 1)) -- empty
    assert(finish_remove1(fl, r5, nr5))
-   assert(select(2, start_remove(fl, 1)) == 0) -- empty
+   assert(not start_remove(fl, 1)) -- empty
    assert(pcall(start_add, fl, 1)) -- not full
 end
