@@ -36,7 +36,7 @@ function new_worker (conf)
    alarms.install_alarm_handler(ptree_alarms:alarm_handler())
    ret.pending_actions = {}
 
-   require("jit.opt").start('sizemcode=256', 'maxmcode=2048')
+   require("jit.opt").start('sizemcode=256', 'maxmcode=8192', 'maxtrace=8000', 'maxrecord=50000', 'maxsnap=20000', 'maxside=10000')
 
    ret.breathe = engine.breathe
    if conf.measure_latency then
@@ -46,6 +46,7 @@ function new_worker (conf)
    if conf.measure_memory then
       timer.activate(memory_info.HeapSizeMonitor.new():timer())
    end
+   engine.busywait = false
    return ret
 end
 
