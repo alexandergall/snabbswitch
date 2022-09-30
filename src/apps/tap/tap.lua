@@ -137,6 +137,9 @@ function Tap:new (conf)
                 .. mtu_configured)
    end
 
+   -- Crude workaround for kernels >5.0 where the MAC address of a TAP
+   -- interface changes shortly after creation
+   S.sleep(2)
    return setmetatable({fd = fd,
                         sock = sock,
                         ifr = ifr,
