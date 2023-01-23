@@ -86,6 +86,7 @@ function start (name, confpath)
          busywait = busywait,
          real_time = real_time,
          profile = profile,
+         group_freelist_size = 2048,
          jit_opt = {
             sizemcode=256,
             maxmcode=8192,

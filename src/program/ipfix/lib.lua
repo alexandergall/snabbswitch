@@ -71,7 +71,7 @@ local function configure_interlink_input (config, in_graph)
 
    local in_name = config.name
 
-   app_graph.app(graph, in_name, Receiver)
+   app_graph.app(graph, in_name, Receiver, { size = 65536 })
 
    return graph, {name=in_name, output='output'}
 end
@@ -84,7 +84,7 @@ local function configure_interlink_output (config, in_graph)
 
    local out_name = config.name
 
-   app_graph.app(graph, out_name, Transmitter)
+   app_graph.app(graph, out_name, Transmitter, { size = 65536 })
 
    return graph, {name=out_name, input='input'}
 end
