@@ -86,7 +86,7 @@ local function clear_cache()
    cfkey_cache = {}
 end
 
-cfkey = memoize(function (expr)
+cfkey = function (expr)
    if type(expr) == 'table' then
       local parts = {'('}
       for i=1,#expr do
@@ -97,7 +97,7 @@ cfkey = memoize(function (expr)
    else
       return expr
    end
-end)
+end
 
 -- A simple expression can be duplicated.  FIXME: Some calls are simple,
 -- some are not.  For now our optimizations don't work very well if we
