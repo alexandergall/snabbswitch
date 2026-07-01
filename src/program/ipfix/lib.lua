@@ -103,30 +103,28 @@ function graph ()
 end
 
 function ipfix_app (graph, config)
-   local ipfix_app = App:new(graph, "ipfix_"..assert(config.instance),
-                             ipfix.IPFIX, config)
+   return App:new(graph, "ipfix_"..assert(config.instance),
+                  ipfix.IPFIX, config)
+end
 
-   local device = "ipfixexport"..config.observation_domain
-   local tap_name = "tap_"..config.instance
+function tap_app (graph, mtu, log_date)
+   local tap_name = "ipfixexport"
    local tap = App:new(graph, tap_name, tap.Tap, {
-                          name = device,
-                          mtu = config.mtu,
+                          name = tap_name,
+                          mtu = mtu,
                           overwrite_dst_mac = true,
                           forwarding = true })
-   local sink = App:new(graph, "sink_"..config.instance,
+   local sink = App:new(graph, "submit_sink",
                         basic.Sink)
-   local ifmib = App:new(graph, "tap_ifmib_"..config.instance,
+   local ifmib = App:new(graph, "submit_ifmib",
                          iftable.MIB, {
                             target_app = tap_name,
-                            ifname = device,
-                            ifalias = "IPFIX Observation Domain "..config.observation_domain,
-                            log_date = config.log_date })
-   graph:connect(ipfix_app:socket('output'), tap:socket('input'))
-   -- with UDP, ipfix doesn't need to handle packets from the collector
-   -- (hence, discard packets incoming from the tap interface to sink)
-   graph:connect(tap:socket('output'), sink:socket('input'))
-
-   return ipfix_app
+                            ifname = "ipfixexport",
+                            ifalias = "IPFIX export",
+                            log_date = log_date })
+   local join = App:new(graph, "submit_join", basic.Join)
+   graph:connect(join:socket('output'), tap:socket('input'))
+   return join
 end
 
 function interlink_pair (xmt_graph, rcv_graph, name, size)

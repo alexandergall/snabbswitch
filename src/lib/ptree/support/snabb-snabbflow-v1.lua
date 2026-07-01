@@ -85,6 +85,15 @@ local function find_ingress_link (pid, app)
    error("No RSS link for: "..app.." (pid: "..pid..")")
 end
 
+local function find_submission_stats (pid, app)
+   for _, link in ipairs(shm.children("/"..pid.."/links")) do
+      if link:match(("^%s.output *->"):format(app)) then
+         return shm.open_frame("/"..pid.."/links/"..link)
+      end
+   end
+   error("No submission link for: "..app.." (pid: "..pid..")")
+end
+
 local function collect_ipfix_states (pid, ingress_links)
    local states = {}
    for _, app in ipairs(shm.children("/"..pid.."/apps")) do
@@ -92,6 +101,7 @@ local function collect_ipfix_states (pid, ingress_links)
          app:match("^ipfix_rss%d+_(%d+)_(%w+)_(%w+)$")
       if exporter then
          local stats = shm.open_frame("/"..pid.."/apps/"..app)
+         local submission_stats = find_submission_stats(pid, app)
          local state = {
             id = tonumber(instance),
             pid = pid,
@@ -99,7 +109,11 @@ local function collect_ipfix_states (pid, ingress_links)
             packets_received = counter.read(stats.received_packets),
             packets_ignored = counter.read(stats.ignored_packets),
             template_packets_transmitted = counter.read(stats.template_packets),
-            sequence_number = counter.read(stats.sequence_number)
+            sequence_number = counter.read(stats.sequence_number),
+            submission = {
+               packets_transmitted = counter.read(submission_stats.txpackets),
+               packets_dropped = counter.read(submission_stats.txdrop)
+            }
          }
          state.template = collect_template_states(pid, app:match("^ipfix_(.*)$"))
          ingress_links[find_ingress_link(pid, app)] = state.observation_domain
@@ -203,12 +217,15 @@ local function process_states (pids)
       state.exporter[exporter] = state.exporter[exporter] or {}
       local exporter = state.exporter[exporter]
       exporter.template = exporter.template or {}
+      exporter.submission = exporter.submission or {}
       local templates = exporter.template
       for _, ipfix_state in ipairs(states) do
          agg(exporter, ipfix_state, 'packets_received')
          agg(exporter, ipfix_state, 'packets_dropped')
          agg(exporter, ipfix_state, 'packets_ignored')
          agg(exporter, ipfix_state, 'template_packets_transmitted')
+         agg(exporter.submission, ipfix_state.submission, 'packets_transmitted')
+         agg(exporter.submission, ipfix_state.submission, 'packets_dropped')
          for id, template_state in pairs(ipfix_state.template) do
             templates[id] = templates[id] or {}
             agg(templates[id], template_state, 'packets_processed')

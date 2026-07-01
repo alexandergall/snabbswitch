@@ -617,6 +617,7 @@ module snabb-snabbflow-v1 {
       }
 
       uses exporter-state;
+      uses submission-state;
 
       list template {
         key id;
@@ -695,6 +696,7 @@ module snabb-snabbflow-v1 {
           uses worker-state;
           uses exporter-state;
           uses exporter-instance-state;
+          uses submission-state;
 
           list template {
             key id;
@@ -774,6 +776,22 @@ module snabb-snabbflow-v1 {
         type uint32;
         description
           "Process identifier of this worker.";
+      }
+    }
+
+    grouping submission-state {
+      container submission {
+        leaf packets-transmitted {
+          type yang:zero-based-counter64;
+          description
+            "Count of packets sent to the submission worker.";
+        }
+        leaf packets-dropped {
+          type yang:zero-based-counter64;
+          description
+            "Count of packets to the submission worker that were
+          dropped.";
+        }
       }
     }
 

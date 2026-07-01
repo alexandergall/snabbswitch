@@ -250,6 +250,11 @@ function setup_workers (config)
       return configs
    end
 
+   -- App graph for an instance of the tap app that submits all
+   -- IPFIX export packets to the kernel
+   local submit_graph = probe.graph()
+   local submit_join = probe.tap_app(submit_graph, base_config.mtu, base_config.log_date)
+
    for rss_group = 1, rss.hardware_scaling.rss_groups do
       local inputs, sockets, rss_links = {}, {}, {}
       -- App graph that will be run in the RSS worker process
@@ -358,6 +363,11 @@ function setup_workers (config)
                config.extrude = nil
                local tmp_graph = probe.graph()
                local ipfix = probe.ipfix_app(tmp_graph, config)
+               local xmit, rcv = probe.interlink_pair(tmp_graph, submit_graph,
+                                                      config.instance.."_submit",
+                                                      rss.software_scaling.interlink_size)
+               tmp_graph:connect(ipfix:socket('output'), xmit:socket('input'))
+               submit_graph:connect(rcv:socket('output'), submit_join:socket(config.instance))
                if not head then
                   head = ipfix
                   inner_graph:embed(tmp_graph)
@@ -492,6 +502,8 @@ function setup_workers (config)
       end
       workers["rss"..rss_group] = rss_graph:app_graph()
    end
+   workers["submit"] = submit_graph:app_graph()
+   worker_opts["submit"] = { acquire_cpu = false }
 
    if not pcap_input then
       -- Create a trivial app graph that only contains the control apps
