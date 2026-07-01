@@ -3,8 +3,6 @@ module(..., package.seeall)
 local lib         = require("core.lib")
 local app_graph   = require("core.config")
 local pci         = require("lib.hardware.pci")
-local ipv4        = require("lib.protocol.ipv4")
-local ethernet    = require("lib.protocol.ethernet")
 local basic       = require("apps.basic.basic_apps")
 local ipfix       = require("apps.ipfix.ipfix")
 local tap         = require("apps.tap.tap")
@@ -13,85 +11,141 @@ local iftable     = require("apps.snmp.iftable")
 local Receiver    = require("apps.interlink.receiver")
 local Transmitter = require("apps.interlink.transmitter")
 local pcap        = require("apps.pcap.pcap")
+local vlan        = require("apps.vlan.vlan")
+
+local Graph = {}
+function Graph:new ()
+   return setmetatable(
+      {
+         apps = {},
+         links ={},
+      }, { __index = Graph })
+end
+
+function Graph:add_app (app)
+   local name = app:name()
+   assert(not self.apps[name], "Duplicate app "..name)
+   self.apps[name] = app
+end
+
+function Graph:connect (from, to)
+   assert(self.apps[from.app:name()])
+   assert(self.apps[to.app:name()])
+   assert(not from.connected)
+   assert(not to.connected)
+   from.connected = true
+   to.connected = true
+   table.insert(self.links, from.output..' -> '..to.input)
+end
+
+function Graph:app_graph ()
+   local graph = app_graph.new()
+   for name, app in pairs(self.apps) do
+      app_graph.app(graph, app:name(), app:class(), app:config())
+   end
+   for _, linkspec in ipairs(self.links) do
+      app_graph.link(graph, linkspec)
+   end
+   return graph
+end
+
+function Graph:embed (graph)
+   for name, app in pairs(graph.apps) do
+      assert(not self.apps[name], "Graph:copy: duplicate app "..name)
+      self.apps[name] = app
+   end
+   for _, link in ipairs(graph.links) do
+      table.insert(self.links, link)
+   end
+end
+
+local App = {}
+function App:new (graph, name, class, config)
+   local self = setmetatable({}, { __index = App })
+   self._name = name
+   self._class = class
+   self:config(config)
+   graph:add_app(self)
+   return self
+end
+
+function App:name ()
+   return self._name
+end
+
+function App:class ()
+   return self._class
+end
+
+function App:config (config)
+   if config == nil then return self._config end
+   self._config = config
+end
+
+function App:update (config)
+   for k, v in pairs(config) do
+      self._config[k] = v
+   end
+end
+
+function App:socket (name)
+   local full_name = self._name.."."..name
+   return {
+      connected = false,
+      app = self,
+      input = full_name,
+      output = full_name
+   }
+end
+
+function graph ()
+   return Graph:new()
+end
+
+function ipfix_app (graph, config)
+   local ipfix_app = App:new(graph, "ipfix_"..assert(config.instance),
+                             ipfix.IPFIX, config)
+
+   local device = "ipfixexport"..config.observation_domain
+   local tap_name = "tap_"..config.instance
+   local tap = App:new(graph, tap_name, tap.Tap, {
+                          name = device,
+                          mtu = config.mtu,
+                          overwrite_dst_mac = true,
+                          forwarding = true })
+   local sink = App:new(graph, "sink_"..config.instance,
+                        basic.Sink)
+   local ifmib = App:new(graph, "tap_ifmib_"..config.instance,
+                         iftable.MIB, {
+                            target_app = tap_name,
+                            ifname = device,
+                            ifalias = "IPFIX Observation Domain "..config.observation_domain,
+                            log_date = config.log_date })
+   graph:connect(ipfix_app:socket('output'), tap:socket('input'))
+   -- with UDP, ipfix doesn't need to handle packets from the collector
+   -- (hence, discard packets incoming from the tap interface to sink)
+   graph:connect(tap:socket('output'), sink:socket('input'))
+
+   return ipfix_app
+end
+
+function interlink_pair (xmt_graph, rcv_graph, name, size)
+   local full_name = "interlink_"..name
+   local xmt = App:new(xmt_graph, full_name, Transmitter, { size = size })
+   local rcv = App:new(rcv_graph, full_name, Receiver, { size = size })
+   return xmt, rcv
+end
+
+function pcap_app (graph, pcap_file, rss_group)
+   return App:new(graph, "pcap_"..rss_group,
+                  pcap.PcapReader, pcap_file)
+end
 
 local function normalize_pci_name (device)
    return pci.qualified(device):gsub("[:%.]", "_")
 end
 
-local function configure_ipfix_instance (config, in_graph)
-   local graph = in_graph or app_graph.new()
-
-   local ipfix_name = "ipfix_"..assert(config.instance)
-
-   app_graph.app(graph, ipfix_name, ipfix.IPFIX, config)
-
-   return graph, {name=ipfix_name, output='output', input='input'}
-end
-
-local function configure_tap_output (config, in_graph)
-   config = lib.parse(config, {
-      instance={required=true},
-      observation_domain={required=true},
-      mtu={required=true},
-      log_date={required=true}
-   })
-   local graph = in_graph or app_graph.new()
-
-   local device = "ipfixexport"..config.observation_domain
-
-   local tap_config = {
-      name = device,
-      mtu = config.mtu,
-      overwrite_dst_mac = true,
-      forwarding = true
-   }
-   local tap_name = "out_"..config.instance
-   local sink_name = "sink_"..config.instance
-
-   -- with UDP, ipfix doesn't need to handle packets from the collector
-   -- (hence, discard packets incoming from the tap interface to sink)
-   app_graph.app(graph, tap_name, tap.Tap, tap_config)
-   app_graph.app(graph, sink_name, basic.Sink)   
-   app_graph.link(graph, tap_name..".output -> "..sink_name..".input")
-   app_graph.app(graph, "tap_ifmib_"..config.instance, iftable.MIB, {
-      target_app = tap_name,
-      ifname = device,
-      ifalias = "IPFIX Observation Domain "..config.observation_domain,
-      log_date = config.log_date
-   })
-
-   return graph, {name=tap_name, input='input'}
-end
-
-local function configure_interlink_input (config, in_graph)
-   config = lib.parse(config, {
-      name={required=true},
-      size={required=true}
-   })
-   local graph = in_graph or app_graph.new()
-
-   local in_name = config.name
-
-   app_graph.app(graph, in_name, Receiver, { size = config.size })
-
-   return graph, {name=in_name, output='output'}
-end
-
-local function configure_interlink_output (config, in_graph)
-   config = lib.parse(config, {
-      name={required=true},
-      size={required=true}
-   })
-   local graph = in_graph or app_graph.new()
-
-   local out_name = config.name
-
-   app_graph.app(graph, out_name, Transmitter, { size = config.size })
-
-   return graph, {name=out_name, input='input'}
-end
-
-local function configure_pci_input (config, in_graph)
+local function pci_input (graph, config)
    config = lib.parse(config, {
       device={required=true},
       rxq={required=true},
@@ -101,10 +155,9 @@ local function configure_pci_input (config, in_graph)
       name={},
       description={}
    })
-   local graph = in_graph or app_graph.new()
 
    local pci_name = normalize_pci_name(config.device)
-   local in_name = "input_"..pci_name
+   local in_name = "input_"..pci_name.."_rxq"..config.rxq
    local device_info = pci.device_info(config.device)
    assert(device_info.usable == "yes",
           ("Unsupported device %s (%x:%x)"):format(config.device,
@@ -126,156 +179,46 @@ local function configure_pci_input (config, in_graph)
       }
    end
 
-   app_graph.app(graph, in_name, driver, conf)
-   app_graph.app(graph, "nic_ifmib_"..in_name, iftable.MIB, {
-      target_app = in_name, stats = 'stats',
-      ifname = config.name or pci_name,
-      ifalias = config.description,
-      log_date = config.log_date
-   })
-
-   local nic = {name=in_name, input=device_info.rx, output=device_info.tx}
-   local link_name = nic.name
-   if conf.vlan_tag then
-      link_name = "vlan"..conf.vlan_tag
-   end
-
-   return graph, nic, link_name
+   local driver = App:new(graph, in_name, driver, conf)
+   local ifmib = App:new(graph, "nic_ifmib_"..in_name, iftable.MIB, {
+                            target_app = in_name, stats = 'stats',
+                            ifname = config.name or pci_name,
+                            ifalias = config.description,
+                            log_date = config.log_date })
+   return pci_name, driver:socket(device_info.tx)
 end
 
-local function configure_pcap_input (config, in_graph)
-   config = lib.parse(config, {
-      path={required=true},
-      name={default='pcap'}
-   })
-   local graph = in_graph or app_graph.new()
-
-   local in_name = config.name
-
-   app_graph.app(graph, in_name, pcap.PcapReader, config.path)
-
-   return graph, {name=in_name, output='output'}
-end
-
-local function link (graph, from, to)
-   assert(from.name, "missing name in 'from'")
-   assert(from.output, "missing output in 'from': "..from.name)
-   assert(to.name, "missing name in 'to'")
-   assert(to.input, "missing input in 'to': "..to.name)
-   app_graph.link(
-      graph, from.name.."."..from.output.."->"..to.name.."."..to.input
-   )
-end
-
-local function configure_ipfix_tap_instance (config, in_graph)
-   local graph = in_graph or app_graph.new()
-   local _, ipfix = configure_ipfix_instance(config, graph)
-   local tap_args = {
-      instance = config.instance,
-      observation_domain = config.observation_domain,
-      mtu = config.mtu,
-      log_date = config.log_date
-   }
-   local _, tap = configure_tap_output(tap_args, graph)
-   link(graph, ipfix, tap)
-   return graph, ipfix
-end
-
-function configure_interlink_ipfix_tap_instance (in_name, link_size, config)
-   local graph = app_graph.new()
-   local _, receiver = configure_interlink_input({name=in_name, size=link_size}, graph)
-   local _, ipfix = configure_ipfix_tap_instance(config, graph)
-   link(graph, receiver, ipfix)
-
-   return graph
-end
-
-function configure_pci_ipfix_tap_instance (config, inputs, rss_group)
-   local graph = app_graph.new()
-
-   local rss_name = "rss"..assert(rss_group)
-
-   local rss = {name=rss_name, output='output'}
-   app_graph.app(graph, rss_name, basic.Join)
-
+function pci_links (graph, inputs)
    local links = {}
-   for _, pci in ipairs(inputs) do
-      local _, nic, link_name = configure_pci_input(pci, graph)
-      links[link_name] = assert(not links[link_name],
-         "input link not unique: "..link_name)
-      link(graph, nic, {name=rss.name, input=link_name})
-   end
-   local _, ipfix = configure_ipfix_tap_instance(config, graph)
-   link(graph, rss, ipfix)
-
-   return graph
-end
-
-function configure_pcap_ipfix_tap_instance (config, pcap_path, rss_group)
-   local graph = app_graph.new()
-
-   local rss_name = "rss"..assert(rss_group)
-
-   local _, pcap = configure_pcap_input({name=rss_name, path=pcap_path}, graph)
-   local _, ipfix = configure_ipfix_tap_instance(config, graph)
-   link(graph, pcap, ipfix)
-
-   return graph
-end
-
-local function configure_rss_tap_instances (config, outputs, rss_group, in_graph)
-   local graph = in_graph or app_graph.new()
-
-   local rss_name = "rss"..assert(rss_group)
-   
-   app_graph.app(graph, rss_name, rss.rss, config)
-
-   for _, output in ipairs(outputs) do
-      local rss = {name=rss_name, output=output.link_name}
-      if output.type == 'interlink' then
-         -- Keys
-         --   link_name  name of the link
-         local _, transmitter = configure_interlink_output(
-            {name=output.link_name, size=output.link_size}, graph
-         )
-         link(graph, rss, transmitter)
-      else
-         -- Keys
-         --   link_name  name of the link
-         --   args       probe configuration
-         --   instance   # of embedded instance
-         output.args.instance = output.instance or output.args.instance
-         local _, ipfix = configure_ipfix_tap_instance(output.args, graph)
-         link(graph, rss, ipfix)
+   local tags = {}
+   for _, pci_config in ipairs(inputs) do
+      local pci_name, socket = pci_input(graph, pci_config)
+      local link_name = 'input_'..pci_name
+      if (pci_config.vlan_tag) then
+         local tag = pci_config.vlan_tag
+         if tags[tag] then
+            error(pci_name..": VLAN tag "..tag.." already assigned to "..tags[tag])
+         end
+         -- NB: adhere to the naming convention of the "pseudo
+         -- VLAN-tagging" feature of the rss app
+         link_name = "vlan"..tag
+         tags[tag] = pci_name
       end
+      table.insert(links, { socket, link_name })
    end
-
-   return graph, {name=rss_name}
+   return links
 end
 
-function configure_pci_rss_tap_instances (config, inputs, outputs, rss_group)
-   local graph = app_graph.new()
-
-   local _, rss = configure_rss_tap_instances(config, outputs, rss_group, graph)
-   local links = {}
-   for _, pci in ipairs(inputs) do
-      local _, nic, link_name = configure_pci_input(pci, graph)
-      links[link_name] = assert(not links[link_name],
-         "input link not unique: "..link_name)
-      link(graph, nic, {name=rss.name, input=link_name})
-   end
-
-   return graph
+function join_app (graph, rss_group)
+   return App:new(graph, "join_"..rss_group, basic.Join)
 end
 
-function configure_pcap_rss_tap_instances(config, pcap_path, outputs, rss_group)
-   local graph = app_graph.new()
+function rss_app (graph, config, rss_group)
+    return App:new(graph, "rss"..rss_group, rss.rss, config)
+end
 
-   local _, rss = configure_rss_tap_instances(config, outputs, rss_group, graph)
-   local _, pcap = configure_pcap_input({path=pcap_path}, graph)
-   link(graph, pcap, {name=rss.name, input='pcap'})
-
-   return graph
+function vlan_tagger_app (graph, tag)
+   return App:new(graph, "vlan_"..tag, vlan.Tagger, { tag = tonumber(tag) })
 end
 
 function configure_mlx_controller (devices)

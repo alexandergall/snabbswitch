@@ -26,6 +26,7 @@ local worker_config_spec = {
    no_report = {default=false},
    report = {default={showapps=true,showlinks=true}},
    Hz = {default=1000},
+   max_packets = {},
 }
 
 function new_worker (conf)
@@ -46,6 +47,7 @@ function new_worker (conf)
    if conf.measure_memory then
       timer.activate(memory_info.HeapSizeMonitor.new():timer())
    end
+   ret.max_packets = conf.max_packets
    return ret
 end
 

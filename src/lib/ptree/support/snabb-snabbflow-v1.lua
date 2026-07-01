@@ -31,9 +31,25 @@ local function collect_pci_states (pid)
    return states
 end
 
-local function collect_template_states (pid, app, exporter)
+local function collect_rss_states (pid)
    local states = {}
-   local templates_path = "/"..pid.."/ipfix_templates/"..exporter
+   for _, link in ipairs(shm.children("/"..pid.."/links")) do
+      local rss_group
+      if link:match("^input_") then
+         rss_group = tonumber(link:match("rxq(%d+)")) + 1
+      elseif link:match("^pcap_") then
+         rss_group = tonumber(link:match("pcap_(%d+)"))
+      end
+      if rss_group then
+         states[rss_group] = pid
+      end
+   end
+   return states
+end
+
+local function collect_template_states (pid, instance)
+   local states = {}
+   local templates_path = "/"..pid.."/ipfix_templates/"..instance
    for _, id in ipairs(shm.children(templates_path)) do
       local id = assert(tonumber(id))
       local stats = shm.open_frame(templates_path.."/"..id)
@@ -59,20 +75,21 @@ local function collect_template_states (pid, app, exporter)
    return states
 end
 
-local function find_rss_link (pid, app)
+local function find_ingress_link (pid, app)
    for _, link in ipairs(shm.children("/"..pid.."/links")) do
-      local rss_link = link:match(("^([%%w_]+%%.[%%w_]+) *-> *%s.input$"):format(app))
-      if rss_link then
-         return rss_link
+      local ingress_link = link:match(("^([%%w_]+%%.[%%w_]+) *-> *%s.input$"):format(app))
+      if ingress_link then
+         return ingress_link
       end
    end
    error("No RSS link for: "..app.." (pid: "..pid..")")
 end
 
-local function collect_ipfix_states (pid, rss_links)
+local function collect_ipfix_states (pid, ingress_links)
    local states = {}
    for _, app in ipairs(shm.children("/"..pid.."/apps")) do
-      local exporter, instance = app:match("^ipfix_([%w_]+)_(%d+)$")
+      local instance, pipeline, exporter =
+         app:match("^ipfix_rss%d+_(%d+)_(%w+)_(%w+)$")
       if exporter then
          local stats = shm.open_frame("/"..pid.."/apps/"..app)
          local state = {
@@ -84,30 +101,29 @@ local function collect_ipfix_states (pid, rss_links)
             template_packets_transmitted = counter.read(stats.template_packets),
             sequence_number = counter.read(stats.sequence_number)
          }
-         state.template = collect_template_states(pid, app, exporter.."_"..instance)
-         rss_links[find_rss_link(pid, app)] = state.observation_domain
-         states[exporter] = state
+         state.template = collect_template_states(pid, app:match("^ipfix_(.*)$"))
+         ingress_links[find_ingress_link(pid, app)] = state.observation_domain
+         -- The list of exporters in the YANG snabbflow-state schema
+         -- has the exporter name and pipeline name as keys. We use
+         -- the combined string as key to the state table here and
+         -- separate it later when generating the list proper.
+         states[pipeline..":"..exporter] = state
       end
    end
    return states
 end
 
-function collect_rss_states (pid, rss_links)
+function collect_ingress_states (pid, ingress_links)
    local states = {}
-   local id
    for _, link in ipairs(shm.children("/"..pid.."/links")) do
-      local rss_group = tonumber(link:match("^rss(%d+)%."))
-      if rss_group then
-         id = tonumber(rss_group)
-      end
-      for rss_link, _ in pairs(rss_links) do
-         if (link:match("^"..rss_link) and link:match("^rss%d+%.")) -- embedded link
-         or (link:match("-> *"..rss_link:gsub("%.output$", ".input").."$")) -- interlink
+      for ingress_link, observation_domain in pairs(ingress_links) do
+         if (not link:match("interlink") and
+             link:match("^"..ingress_link) and link:match("-> ipfix_")) -- embedded link
+            or (link:match("-> *"..ingress_link:gsub("%.output$", ".input").."$")) -- interlink
          then
             local stats = shm.open_frame("/"..pid.."/links/"..link)
-            local observation_domain = rss_links[rss_link]
             states[observation_domain] = {
-               id = id,
+               id = tonumber(assert(link:match("rss(%d+)_"))),
                pid = pid,
                txdrop = counter.read(stats.txdrop)
             }
@@ -142,39 +158,43 @@ local function process_states (pids)
       exporter = {},
       rss_group = {}
    }
-   -- Collect PCI device states
+   -- Mapping of RSS groups to the PID of the main RSS process
+   local rss_states = {}
+   -- Mapping between ingress links and IPFIX instances represented by
+   -- the instance's observation domain
+   local ingress_links = {}
+   -- States of IPFIX instances
+   local ipfix_states = {}
+   -- IPFIX ingress link states
+   local ingress_states = {}
+
    for _, pid in ipairs(pids) do
-      local states = collect_pci_states(pid)
-      for _, pci_state in ipairs(states) do
+      for _, pci_state in ipairs(collect_pci_states(pid)) do
          state.interface[pci_state.device] = pci_state
       end
-   end
-   -- Mapping between software RSS links and IPFIX instances
-   local rss_links = {}
-   -- Collect IPFIX instance states
-   local ipfix_states = {}
-   for _, pid in ipairs(pids) do
-      local states = collect_ipfix_states(pid, rss_links)
-      for exporter, ipfix_state in pairs(states) do
+      for rss_group, pid in pairs(collect_rss_states(pid)) do
+         rss_states[rss_group] = pid
+      end
+      for exporter, ipfix_state in pairs(collect_ipfix_states(pid, ingress_links)) do
          ipfix_states[exporter] = ipfix_states[exporter] or {}
          table.insert(ipfix_states[exporter], ipfix_state)
       end
    end
-   -- Collect RSS states
-   local rss_states = {}
+
    for _, pid in ipairs(pids) do
-      local states = collect_rss_states(pid, rss_links)
-      for observation_domain, rss_state in pairs(states) do
-         rss_states[observation_domain] = rss_state
+      for observation_domain, state in pairs(collect_ingress_states(pid, ingress_links)) do
+         ingress_states[observation_domain] = state
       end
    end
-   -- Enrich IPFIX instance states with software RSS link drop counts
+
+   -- Enrich IPFIX instance states with ingress link drop counts
    for _, states in pairs(ipfix_states) do
       for _, ipfix_state in ipairs(states) do
          local observation_domain = ipfix_state.observation_domain
-         ipfix_state.packets_dropped = rss_states[observation_domain].txdrop
+         ipfix_state.packets_dropped = ingress_states[observation_domain].txdrop
       end
    end
+
    -- Aggregate IPFIX exporter states
    local function agg (tdst, tsrc, field)
       tdst[field] = (tdst[field] or 0ULL) + tsrc[field]
@@ -197,20 +217,21 @@ local function process_states (pids)
          end
       end
    end
+
    -- Arrange RSS group -> IPFIX instance tree
-   for exporter, states in pairs(ipfix_states) do
-      for _, ipfix_state in ipairs(states) do
+   for exporter, ipfix_states in pairs(ipfix_states) do
+      for _, ipfix_state in ipairs(ipfix_states) do
          local observation_domain = ipfix_state.observation_domain
-         local rss_state = rss_states[observation_domain]
-         if not state.rss_group[rss_state.id] then
-            state.rss_group[rss_state.id] = {
-               id = rss_state.id,
-               pid = rss_state.pid,
-               queue = collect_queue_state(state.interface, rss_state.id-1),
+         local ingress_state = ingress_states[observation_domain]
+         if not state.rss_group[ingress_state.id] then
+            state.rss_group[ingress_state.id] = {
+               id = ingress_state.id,
+               pid = assert(rss_states[ingress_state.id]),
+               queue = collect_queue_state(state.interface, ingress_state.id-1),
                exporter = {}
             }
          end
-         local rss_group = state.rss_group[rss_state.id]
+         local rss_group = state.rss_group[ingress_state.id]
          if not rss_group.exporter[exporter] then
             rss_group.exporter[exporter] = {
                instance = {}
@@ -220,6 +241,7 @@ local function process_states (pids)
          instances[ipfix_state.id] = ipfix_state
       end
    end
+
    -- Convert tables to lists as defined in schema
    local interfaces = state.interface
    state.interface = get_state_grammar('interface').list.new()
@@ -229,12 +251,14 @@ local function process_states (pids)
    local exporters = state.exporter
    state.exporter = get_state_grammar('exporter').list.new()
    for name, exporter in pairs(exporters) do
+      -- See comment in collect_ipfix_state()
+      local pipeline, name = name:match("^(.*):(.*)$")
       local templates = exporter.template
       exporter.template = get_state_grammar('exporter/template').list.new()
       for id, template in pairs(templates) do
          exporter.template[id] = template
       end
-      state.exporter[name] = exporter
+      state.exporter[{name = name, pipeline = pipeline}] = exporter
    end
    local rss_groups = state.rss_group
    state.rss_group = get_state_grammar('rss-group').list.new()
@@ -247,6 +271,8 @@ local function process_states (pids)
       local exporters = rss_group.exporter
       rss_group.exporter = get_state_grammar('rss-group/exporter').list.new()
       for name, exporter in pairs(exporters) do
+         -- See comment in collect_ipfix_state()
+         local pipeline, name = name:match("^(.*):(.*)$")
          local instances = exporter.instance
          exporter.instance =
             get_state_grammar('rss-group/exporter/instance').list.new()
@@ -259,7 +285,7 @@ local function process_states (pids)
             end
             exporter.instance[id] = instance
          end
-         rss_group.exporter[name] = exporter
+         rss_group.exporter[{name = name, pipeline = pipeline}] = exporter
       end
       state.rss_group[id] = rss_group
    end

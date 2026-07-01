@@ -304,7 +304,7 @@ function FlowSet:id()
    return string.format("%s(#%d)", self.template.name, self.template.id)
 end
 
-function FlowSet:record_flows()
+function FlowSet:record_flows(passthru)
    local entry = self.scratch_entry
    local npackets = link.nreadable(self.incoming)
    for _=1, npackets do
@@ -318,7 +318,11 @@ function FlowSet:record_flows()
       else
          self.template:accumulate(lookup_result, entry, pkt)
       end
-      packet.free(pkt)
+      if not passthru then
+         packet.free(pkt)
+      else
+         link.transmit(passthru, pkt)
+      end
    end
    events.recorded(self.template.id, npackets)
 end
@@ -870,11 +874,15 @@ function IPFIX:push1(input)
 
    counter.add(self.shm.ignored_packets, nreadable)
    for _ = 1, nreadable do
-      packet.free(link.receive(input))
+      if not self.output.passthru then
+         packet.free(link.receive(input))
+      else
+         link.transmit(self.output.passthru, link.receive(input))
+      end
    end
    events.dropped(nreadable)
 
-   for _,set in ipairs(flow_sets) do set:record_flows() end
+   for _,set in ipairs(flow_sets) do set:record_flows(self.output.passthru) end
 
 end
 
