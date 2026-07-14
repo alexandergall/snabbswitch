@@ -85,7 +85,8 @@ function resolver(grammar, path)
    return getter, grammar
 end
 
-resolver = util.memoize(resolver)
+-- Workaround for https://github.com/snabbco/snabb/issues/1535
+--resolver = util.memoize(resolver)
 
 local function grammar_for_schema(schema, path, is_config)
    local grammar = data.data_grammar_from_schema(schema, is_config ~= false)
