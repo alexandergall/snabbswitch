@@ -220,6 +220,19 @@ function setup_workers (config)
          -- specific to the instance
          local config = lib.deepcopy(base_config)
 
+         -- Flow table Overrides
+         for k, v in pairs(exporter) do
+            if not (k == "template" or k == "collector_pool" or k == "name"
+                    or k == "scan_protection") then
+               config[k] = v
+            end
+         end
+
+         -- Scan protection overrides
+         for k, v in pairs(exporter.scan_protection) do
+            config.scan_protection[k] = v
+         end
+
          -- Hint for the caller, must be removed before instantiating
          -- the IPFIX app
          config.extrude = {
@@ -334,14 +347,7 @@ function setup_workers (config)
             break
          end
 
-         -- Scale the scan protection parameters by the number of
-         -- ipfix instances in this RSS class
-         local scale_factor = rss.hardware_scaling.rss_groups * num_instances
-         local scan_protection = {
-            enable = ipfix.scan_protection.enable,
-            threshold_rate = ipfix.scan_protection.threshold_rate / scale_factor,
-            export_rate = ipfix.scan_protection.export_rate / scale_factor,
-         }
+         local sp_scale_factor = rss.hardware_scaling.rss_groups * num_instances
          local ext_seq = 0
          for i = 1, num_instances do
             -- Outermost App graph of the pipeline. It will be either
@@ -358,7 +364,14 @@ function setup_workers (config)
                -- Make the RSS group and instance id discoverable from
                -- the app name for the YANG get-state logic
                config.instance = "rss"..rss_group.."_"..i.."_"..name.."_"..config.instance
-               config.scan_protection = scan_protection
+
+               -- Scale the scan protection parameters by the number of
+               -- ipfix instances in this RSS class
+               config.scan_protection.threshold_rate =
+                  config.scan_protection.threshold_rate / sp_scale_factor
+               config.scan_protection.export_rate =
+                  config.scan_protection.export_rate / sp_scale_factor
+
                local extrude = config.extrude
                config.extrude = nil
                local tmp_graph = probe.graph()
