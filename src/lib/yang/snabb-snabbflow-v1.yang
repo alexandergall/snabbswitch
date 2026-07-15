@@ -11,6 +11,13 @@ module snabb-snabbflow-v1 {
   description
    "Configuration for the Snabbflow IPFIX exporter.";
 
+  revision 2026-07-15 {
+    description
+      "Added pipeline configuration, maximum-packets option. Made
+      idle-timeout, active-timeout, flush-timeout, scan-time, cache-size,
+      max-load-factor, scan-protection configurable per exporter";
+  }
+
   revision 2023-03-15 {
     description
       "Added interlink and group freelist configuration options.";
