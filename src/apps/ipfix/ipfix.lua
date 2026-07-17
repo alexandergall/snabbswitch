@@ -304,14 +304,13 @@ function FlowSet:id()
    return string.format("%s(#%d)", self.template.name, self.template.id)
 end
 
-function FlowSet:record_flows(timestamp)
+function FlowSet:record_flows()
    local entry = self.scratch_entry
-   timestamp = to_milliseconds(timestamp)
    local npackets = link.nreadable(self.incoming)
    for _=1, npackets do
       local pkt = link.receive(self.incoming)
       counter.add(self.shm.packets_in)
-      self.template:extract(pkt, timestamp, entry)
+      self.template:extract(pkt, entry)
       local lookup_result = self.table:lookup_ptr(entry.key)
       if lookup_result == nil then
          self.table:add(entry.key, entry.value)
@@ -842,10 +841,6 @@ function IPFIX:push ()
 end
 
 function IPFIX:push1(input)
-   -- FIXME: Use engine.now() for monotonic time.  Have to check that
-   -- engine.now() gives values relative to the UNIX epoch though.
-   local timestamp = ffi.C.get_unix_time()
-
    local flow_sets = self.flow_sets
    local nreadable = link.nreadable(input)
    counter.add(self.shm.received_packets, nreadable)
@@ -879,7 +874,7 @@ function IPFIX:push1(input)
    end
    events.dropped(nreadable)
 
-   for _,set in ipairs(flow_sets) do set:record_flows(timestamp) end
+   for _,set in ipairs(flow_sets) do set:record_flows() end
 
 end
 
