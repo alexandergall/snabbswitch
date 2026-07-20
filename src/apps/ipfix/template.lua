@@ -376,21 +376,22 @@ end
 -- Clear key and value, extract the 3-tuple, fill in flow start/end
 -- times and packet/octet counters.  This is the bare minimum any
 -- template will need.
-local function extract_3_tuple(pkt, timestamp, entry, md, extract_addr_fn)
+local function extract_3_tuple(pkt, entry, md, extract_addr_fn)
    ffi.fill(entry.key, ffi.sizeof(entry.key))
    ffi.fill(entry.value, ffi.sizeof(entry.value))
 
    extract_addr_fn(md.l3, entry)
    entry.key.protocolIdentifier = md.proto
 
+   local timestamp = md.timestamp/1000000
    entry.value.flowStartMilliseconds = timestamp
    entry.value.flowEndMilliseconds = timestamp
    entry.value.packetDeltaCount = 1
    entry.value.octetDeltaCount = md.total_length
 end
 
-local function extract_5_tuple(pkt, timestamp, entry, md, extract_addr_fn)
-   extract_3_tuple(pkt, timestamp, entry, md, extract_addr_fn)
+local function extract_5_tuple(pkt, entry, md, extract_addr_fn)
+   extract_3_tuple(pkt, entry, md, extract_addr_fn)
    if transport_proto_p[md.proto] and md.frag_offset == 0 then
       extract_transport_key(md.l4, entry)
    end
@@ -411,17 +412,17 @@ local function accumulate_generic(dst, new)
       dst.value.octetDeltaCount + new.value.octetDeltaCount
 end
 
-local function v4_extract (self, pkt, timestamp, entry)
+local function v4_extract (self, pkt, entry)
    local md = metadata_get(pkt)
-   extract_5_tuple(pkt, timestamp, entry, md, extract_v4_addr)
+   extract_5_tuple(pkt, entry, md, extract_v4_addr)
    if md.proto == IP_PROTO_TCP and md.frag_offset == 0 then
       extract_tcp_flags_reduced(md.l4, entry)
    end
 end
 
-local function v6_extract (self, pkt, timestamp, entry)
+local function v6_extract (self, pkt, entry)
    local md = metadata_get(pkt)
-   extract_5_tuple(pkt, timestamp, entry, md, extract_v6_addr)
+   extract_5_tuple(pkt, entry, md, extract_v6_addr)
    if md.proto == IP_PROTO_TCP and md.frag_offset == 0 then
       extract_tcp_flags_reduced(md.l4, entry)
    end
@@ -473,9 +474,9 @@ local function HTTPS_accumulate(self, dst, new, pkt)
    end
 end
 
-local function DNS_extract(self, pkt, timestamp, entry, extract_addr_fn)
+local function DNS_extract(self, pkt, entry, extract_addr_fn)
    local md = metadata_get(pkt)
-   extract_5_tuple(pkt, timestamp, entry, md, extract_addr_fn)
+   extract_5_tuple(pkt, entry, md, extract_addr_fn)
    if md.length_delta == 0 and md.frag_offset == 0 then
       local dns_hdr = md.l4 + 8
       local msg_size = pkt.data + pkt.length - dns_hdr
@@ -491,8 +492,8 @@ local function can_log(logger)
    return logger and logger:can_log()
 end
 
-local function extended_extract(self, pkt, md, timestamp, entry, extract_addr_fn)
-   extract_5_tuple(pkt, timestamp, entry, md, extract_addr_fn)
+local function extended_extract(self, pkt, md, entry, extract_addr_fn)
+   extract_5_tuple(pkt, entry, md, extract_addr_fn)
    local eth_hdr = ffi.cast(ether_header_ptr_t, pkt.data)
 
    ffi.copy(entry.value.sourceMacAddress, eth_hdr.shost, 6)
@@ -539,9 +540,9 @@ local asn = ffi.new([[
      uint32_t number;
    }
 ]])
-local function v4_extended_extract (self, pkt, timestamp, entry)
+local function v4_extended_extract (self, pkt, entry)
    local md = metadata_get(pkt)
-   extended_extract(self, pkt, md, timestamp, entry, extract_v4_addr)
+   extended_extract(self, pkt, md, entry, extract_v4_addr)
 
    local pfx_to_as = self.maps.pfx4_to_as
    local asn = pfx_to_as.map:search_bytes(entry.key.sourceIPv4Address)
@@ -572,9 +573,9 @@ local function v4_extended_accumulate (self, dst, new)
    end
 end
 
-local function v6_extended_extract (self, pkt, timestamp, entry)
+local function v6_extended_extract (self, pkt, entry)
    local md = metadata_get(pkt)
-   extended_extract(self, pkt, md, timestamp, entry, extract_v6_addr)
+   extended_extract(self, pkt, md, entry, extract_v6_addr)
 
    local pfx_to_as = self.maps.pfx6_to_as
    local asn = pfx_to_as.map:search_bytes(entry.key.sourceIPv6Address)
@@ -745,8 +746,8 @@ templates = {
       aggregation_type = 'v4',
       keys   = keys_ipv4_dns,
       values = values_min,
-      extract = function (self, pkt, timestamp, entry)
-         DNS_extract(self, pkt, timestamp, entry, extract_v4_addr)
+      extract = function (self, pkt, entry)
+         DNS_extract(self, pkt, entry, extract_v4_addr)
       end,
       accumulate = DNS_accumulate
    },
@@ -864,8 +865,8 @@ templates = {
       aggregation_type = 'v6',
       keys   = keys_ipv6_dns,
       values = values_min,
-      extract = function (self, pkt, timestamp, entry)
-         DNS_extract(self, pkt, timestamp, entry, extract_v6_addr)
+      extract = function (self, pkt, entry)
+         DNS_extract(self, pkt, entry, extract_v6_addr)
       end,
       accumulate = DNS_accumulate
    },
