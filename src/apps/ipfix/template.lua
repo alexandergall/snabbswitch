@@ -616,6 +616,30 @@ local function concat_lists(...)
    return result
 end
 
+local tostring_5tuple_v4 = function (entry)
+   local ipv4   = require("lib.protocol.ipv4")
+   local key = entry.key
+   local protos =
+      { [IP_PROTO_TCP]='TCP', [IP_PROTO_UDP]='UDP', [IP_PROTO_SCTP]='SCTP' }
+   return string.format(
+      "%s (%d) -> %s (%d) [%s]",
+      ipv4:ntop(key.sourceIPv4Address), key.sourceTransportPort,
+      ipv4:ntop(key.destinationIPv4Address), key.destinationTransportPort,
+      protos[key.protocolIdentifier] or tostring(key.protocolIdentifier))
+end
+
+local tostring_5tuple_v6 = function (entry)
+   local ipv6 = require("lib.protocol.ipv6")
+   local key = entry.key
+   local protos =
+      { [IP_PROTO_TCP]='TCP', [IP_PROTO_UDP]='UDP', [IP_PROTO_SCTP]='SCTP' }
+   return string.format(
+      "%s (%d) -> %s (%d) [%s]",
+      ipv6:ntop(key.sourceIPv6Address), key.sourceTransportPort,
+      ipv6:ntop(key.destinationIPv6Address), key.destinationTransportPort,
+      protos[key.protocolIdentifier] or tostring(key.protocolIdentifier))
+end
+
 local keys_ipv4 = {
    "sourceIPv4Address",
    "destinationIPv4Address",
@@ -716,17 +740,7 @@ templates = {
             accumulate_tcp_flags_reduced(dst, new)
          end
       end,
-      tostring = function (entry)
-         local ipv4   = require("lib.protocol.ipv4")
-         local key = entry.key
-         local protos =
-            { [IP_PROTO_TCP]='TCP', [IP_PROTO_UDP]='UDP', [IP_PROTO_SCTP]='SCTP' }
-         return string.format(
-            "%s (%d) -> %s (%d) [%s]",
-            ipv4:ntop(key.sourceIPv4Address), key.sourceTransportPort,
-            ipv4:ntop(key.destinationIPv4Address), key.destinationTransportPort,
-            protos[key.protocolIdentifier] or tostring(key.protocolIdentifier))
-      end
+      tostring = tostring_5tuple_v4
    },
    v4_HTTP = {
       id     = 257,
@@ -773,6 +787,18 @@ templates = {
       accumulate = function (self, dst, new, pkt)
 	 HTTP_accumulate(self, dst, new, pkt, "flowmon")
       end
+   },
+   v4_UDP = {
+      id     = 261,
+      filter = "ip and udp",
+      aggregation_type = 'v4',
+      keys   = keys_ipv4,
+      values = values_min,
+      extract = v4_extract,
+      accumulate = function (self, dst, new)
+         accumulate_generic(dst, new)
+      end,
+      tostring = tostring_5tuple_v4
    },
    v4_extended = {
       id     = 1256,
@@ -835,17 +861,7 @@ templates = {
             accumulate_tcp_flags_reduced(dst, new)
          end
       end,
-      tostring = function (entry)
-         local ipv6 = require("lib.protocol.ipv6")
-         local key = entry.key
-         local protos =
-            { [IP_PROTO_TCP]='TCP', [IP_PROTO_UDP]='UDP', [IP_PROTO_SCTP]='SCTP' }
-         return string.format(
-            "%s (%d) -> %s (%d) [%s]",
-            ipv6:ntop(key.sourceIPv6Address), key.sourceTransportPort,
-            ipv6:ntop(key.destinationIPv6Address), key.destinationTransportPort,
-            protos[key.protocolIdentifier] or tostring(key.protocolIdentifier))
-      end
+      tostring = tostring_5tuple_v6
    },
    v6_HTTP = {
       id     = 513,
@@ -892,6 +908,18 @@ templates = {
       accumulate = function (self, dst, new, pkt)
 	 HTTP_accumulate(self, dst, new, pkt, "flowmon")
       end
+   },
+   v6_UDP = {
+      id     = 517,
+      filter = "ip6 and udp",
+      aggregation_type = 'v6',
+      keys   = keys_ipv6,
+      values = values_min,
+      extract = v6_extract,
+      accumulate = function (self, dst, new)
+         accumulate_generic(dst, new)
+      end,
+      tostring = tostring_5tuple_v6
    },
    v6_extended = {
       id     = 1512,
