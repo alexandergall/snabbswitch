@@ -11,6 +11,13 @@ module snabb-snabbflow-v1 {
   description
    "Configuration for the Snabbflow IPFIX exporter.";
 
+  revision 2026-07-15 {
+    description
+      "Added pipeline configuration, maximum-packets option. Made
+      idle-timeout, active-timeout, flush-timeout, scan-time, cache-size,
+      max-load-factor, scan-protection configurable per exporter";
+  }
+
   revision 2023-03-15 {
     description
       "Added interlink and group freelist configuration options.";
@@ -72,7 +79,7 @@ module snabb-snabbflow-v1 {
            on an interface distributes packets across one or more RSS groups.
 
         2. software-scaling: traffic may further be distributed to any number
-           of dedicated exporter instance workers via software RSS.";
+           of dedicated pipeline instance workers via software RSS.";
 
       container cpu-pool {
         description
@@ -103,32 +110,32 @@ module snabb-snabbflow-v1 {
       container software-scaling {
         description
           "In addition to hardware assisted RSS Snabbflow supports
-          software RSS. For each IPFIX exporter, traffic is scaled across
-          one or more exporter instances in each RSS group.";
+          software RSS. For each IPFIX pipeline, traffic is scaled across
+          one or more pipeline instances in each RSS group.";
 
-        list exporter {
+        list pipeline {
           key name;
           description
-            "Sofware RSS configuration for the selected exporter.";
+            "Sofware RSS configuration for the selected pipeline.";
 
           leaf name {
             type leafref {
-              path "/snabbflow-config/ipfix/exporter/name";
+              path "/snabbflow-config/ipfix/pipeline/name";
               require-instance true;
             }
             description
-              "The 'name' of an exporter defined in
-              /snabbflow-config/ipfix/exporter.";
+              "The 'name' of a pipeline defined in
+              /snabbflow-config/ipfix/pipeline.";
           }
 
           leaf embed {
             type boolean;
             default true;
             description
-              "By default a single instance of each exporter is embedded
+              "By default a single instance of each pipeline is embedded
               in each RSS group worker process.
               
-              If set to false, then for each RSS group the exporter is
+              If set to false, then for each RSS group the pipeline is
               executed in one or more instances, each in its own dedicated
               worker process (using a dedicated CPU core).";
           }
@@ -146,14 +153,14 @@ module snabb-snabbflow-v1 {
             type uint32 { range 1..max; }
             default 1;
             description
-              "When 'embed' is false, number of exporter instances per
+              "When 'embed' is false, number of pipeline instances per
               RSS group. Has no effect when 'embed' is set to true.";
           }
 
           container restart {
             description
-              "Restart policy for exporter instance workers.
-              Exporter workers will be restarted if they crash unless they
+              "Restart policy for pipeline instance and extrusion workers.
+              The workers will be restarted if they crash unless they
               would exceed the configured restart policy.
               The restart policy is expressed as follows: a process may be
               restarted up to 'intensity' times within 'period' seconds.
@@ -185,46 +192,53 @@ module snabb-snabbflow-v1 {
         }
 
         leaf interlink-size {
-          type uint32 { range 1024|2048|4096|8192|16384|32768|65536|131072|262144; }
+          type uint32 { range 1024|2048|4096|8192|16384|32768|65536|131072|262144|524288; }
           default 65536;
           description
             "Capacity of inter-process packet queues in number of packets.
             Must be a power of two.";
-        }       
+        }
+        leaf maximum-packets {
+          type uint32;
+          default 1000000;
+          description
+            "The maximum number of packet buffers that can be
+            allocated per worker process.";
+        }
       }
     }
 
     container flow-director {
       description
         "Snabbflow supports distinct sets of flows being processed by
-        any number of exporters. Flows are matched into traffic classes
-        which are in turn processed by exporters.";
+        any number of pipelines. Flows are matched into traffic classes
+        which are in turn processed by pipelines.";
 
       list class {
-        key exporter;
+        key pipeline;
         description
           "Traffic classes match packets making up the sets of flows
-          processed by indivdual exporters.
+          processed by indivdual pipelines.
           
-          Each class specifies a single exporter which processes the
-          matched flows, and exporters can only process a single
+          Each class specifies a single pipeline which processes the
+          matched flows, and pipelines can only process a single
           traffic class each.
           
           Classes are ordered and matched in sequence. Packets may match
           multiple classes via use of the 'continue' option. When a packet
           matches multiple classes, it is duplicated for each class and
-          thereby flows can be processed by multiple exporters.";
+          thereby flows can be processed by multiple pipelines.";
 
         ordered-by user;
 
-        leaf exporter {
+        leaf pipeline {
           type leafref {
-            path "/snabbflow-config/ipfix/exporter/name";
+            path "/snabbflow-config/ipfix/pipeline/name";
             require-instance true;
           }
           description
-            "An exporter defined in /snabbflow-config/ipfix/exporter.
-            Packets matched by the class are processed by this exporter.";
+            "A pipeline defined in /snabbflow-config/ipfix/pipeline.
+            Packets matched by the class are processed by this pipeline.";
         }
         
         leaf filter {
@@ -251,16 +265,16 @@ module snabb-snabbflow-v1 {
           "The default class matches all flows not matched by
           any other traffic class.";
 
-        leaf exporter {
+        leaf pipeline {
           type leafref {
-            path "/snabbflow-config/ipfix/exporter/name";
+            path "/snabbflow-config/ipfix/pipeline/name";
             require-instance true;
           }
           description
-            "An exporter defined in /snabbflow-config/ipfix/exporter.
+            "A pipeline defined in /snabbflow-config/ipfix/pipeline.
             Flows matched by the default class are processed by this
-            exporter. If none is given, then flows matched by the
-            default class are dropped and not processed by any exporter.";
+            pipeline. If none is given, then flows matched by the
+            default class are dropped and not processed by any pipeline.";
         }
       }
 
@@ -274,51 +288,107 @@ module snabb-snabbflow-v1 {
     }
 
     container ipfix {
+
+      grouping flow-table {
+        leaf idle-timeout {
+          type decimal64;
+          description
+            "Number of seconds after which a flow should be considered
+            idle and available for expiry.";
+        }
+
+        leaf active-timeout {
+          type decimal64;
+          description
+            "Period at which an active, non-idle flow should produce
+          export records.";
+        }
+
+        leaf flush-timeout {
+          type decimal64;
+          description
+            "Maximum number of seconds after which queued data records
+            are exported.  If set to a positive value, data records are queued
+            until a flow export packet of maximum size according to the configured
+            'mtu' can be generated or 'flush-timeout' seconds have passed
+            since the last export packet was generated, whichever occurs first.
+            If set to zero, data records are exported immediately after each scan
+            of the flow cache.";
+        }
+
+        leaf scan-time {
+          type decimal64;
+          description
+            "The flow cache for every configured template is scanned
+            continously to check for entries eligible for export based
+            on the 'idle-timeout' and 'active-timeout' leaves.
+            Scan-time determines the interval in seconds that a scan
+            of the entire flow cache will take.  The implementation
+            uses a token bucket mechanism by which access to the
+            tables is distributed evenly over the time interval.";
+        }
+
+        leaf cache-size {
+          type uint32;
+          description
+            "Initial size of flow tables, in terms of number of flows.";
+        }
+
+        leaf max-load-factor {
+          type decimal64;
+          description
+            "Controls provisioning size of hash table backing the cache.
+            Refer to “max_occupancy_rate” in lib/README.ctable.md.";
+        }
+      }
+
+      // The scan-protection container could be included in this
+      // grouping but the implementation of refine doesn't support
+      // this yet.
+      grouping scan-protection {
+        leaf enable {
+          type boolean;
+          description
+            "If set to true, scan protection will be enabled.";
+        }
+        leaf threshold-rate {
+          type decimal64;
+          description
+            "Rate of new single-packet flows per second within a /24 prefix
+            beyond which exports will be suppressed.";
+        }
+        leaf export-rate {
+          type decimal64;
+          description
+            "Shared rate limit for exports of all suppressed flows
+            (exports per second).";
+        }
+      }
+
       description
         "IPFIX configuration. See also: apps.ipfix";
 
-      leaf idle-timeout {
-        type decimal64;
-        default 300;
-        description
-          "Number of seconds after which a flow should be considered
-          idle and available for expiry.";
-      }
-
-      leaf active-timeout {
-        type decimal64;
-        default 120;
-        description
-          "Period at which an active, non-idle flow should produce
-          export records.";
-      }
-
-      leaf flush-timeout {
-        type decimal64;
-        default 10;
-        description
-          "Maximum number of seconds after which queued data records
-          are exported.  If set to a positive value, data records are queued
-          until a flow export packet of maximum size according to the configured
-          'mtu' can be generated or 'flush-timeout' seconds have passed
-          since the last export packet was generated, whichever occurs first.
-          If set to zero, data records are exported immediately after each scan
-          of the flow cache.";
-      }
-
-      leaf cache-size {
-        type uint32;
-        default 20000;
-        description
-          "Initial size of flow tables, in terms of number of flows.";
-      }
-
-      leaf max-load-factor {
-        type decimal64;
-        default 0.4;
-        description
-          "Controls provisioning size of hash table backing the cache.
-          Refer to “max_occupancy_rate” in lib/README.ctable.md.";
+      // Apply defaults here rather than the grouping so they can be
+      // overridden in the exporter-specific instances
+      uses flow-table {
+        refine idle-timeout {
+          default 300;
+        }
+        refine active-timeout {
+          default 120;
+        }
+        refine flush-timeout {
+          default 10;
+        }
+        refine scan-time {
+          default 10;
+        }
+        refine cache-size {
+          default 20000;
+        }
+        refine max-load-factor {
+          default 0.4;
+        }
       }
 
       container scan-protection {
@@ -328,39 +398,23 @@ module snabb-snabbflow-v1 {
           address and port range scans.
           The options below can be used to limit the rate at which
           these flows are exported by suppressing them.";
-        leaf enable {
-          type boolean;
-          default false;
-          description
-            "If set to true, scan protection will be enabled.";
-        }
-        leaf threshold-rate {
-          type decimal64;
-          default 10000;
-          description
-            "Rate of new single-packet flows per second within a /24 prefix
-            beyond which exports will be suppressed.";
-        }
-        leaf export-rate {
-          type decimal64;
-          default 500;
-          description
-            "Shared rate limit for exports of all suppressed flows
-            (exports per second).";
-        }
-      }
 
-      leaf scan-time {
-        type decimal64;
-        default 10;
-        description
-          "The flow cache for every configured template is scanned
-          continously to check for entries eligible for export based on the
-          'idle-timeout' and 'active-timeout' leaves.  Scan-time
-          determines the interval in seconds that a scan of the entire flow
-          cache will take.  The implementation uses a token bucket mechanism by
-          which access to the tables is distributed evenly over the time
-          interval.";
+        uses scan-protection {
+          refine enable {
+            default false;
+          }
+          refine threshold-rate {
+            default 10000;
+          }
+          // Don't use default values for all leafes in the container
+          // as a workaround for
+          // https://github.com/snabbco/snabb/issues/1537. The default
+          // will be implied when instantiating apps.ipfix.
+
+          // refine export-rate {
+          //   default 500;
+          // }
+        }
       }
 
       leaf template-refresh-interval {
@@ -467,8 +521,9 @@ module snabb-snabbflow-v1 {
       list exporter {
         key name;
         description
-          "Set of configured exporters. Each exporter receives packets
-          matching a single class defined in /snabbflow-config/rss/flow-director,
+          "Set of configured exporters. Exporters are grouped into pipelines
+          in /snabbflow-config/pipeline. Each exporter within a pipline receives
+          packets matching a single class defined in /snabbflow-config/rss/flow-director,
           aggregates flows according to a set of templates, and
           exports them to a specified /snabbflow-config/ipfix/collector-pool.";
 
@@ -476,7 +531,7 @@ module snabb-snabbflow-v1 {
           type string-name;
           description
             "The name used to refer to this exporter in
-            /snabbflow-config/rss/software-scaling/exporter/name.";
+            /snabbflow-config/pipeline/name.";
         }
 
         leaf-list template {
@@ -494,6 +549,61 @@ module snabb-snabbflow-v1 {
           mandatory true;
           description
             "A collector pool defined in /snabbflow-config/ipfix/collector-pool.";
+        }
+
+        uses flow-table;
+
+        container scan-protection {
+          uses scan-protection;
+        }
+      }
+
+      list pipeline {
+        key name;
+        description
+          "Named piplines of exporters. Each pipeline consists of an
+          ordered list of exporters. When it is assigned to a traffic
+          class in /snabbflow-config/flow-director/class, all packets
+          assigned to the class traverse the list of exportes in the
+          given order. This allows packets to be processed by
+          independent exporters without duplicating packets. The
+          pipline is executed in a single worker process unless the
+          /snabbflow-config/pipline/name/extrude flag is set for one
+          or more exporters in the pipeline";
+        leaf name {
+          type string;
+          description
+            "The unique name of the pipeline.";
+        }
+        list exporter {
+          key name;
+          description
+            "An ordered list of exporters defined in
+            /snabbflow-config/ipfix/exporter/name. Each exporter can
+            occur at most once.";
+          odered-by user;
+          leaf name {
+            type leafref {
+              path "/snabbflow-config/ipfix/exporter/name";
+              require-instance true;
+            }
+          }
+          leaf extrude {
+            type boolean;
+            description
+              "If set to true, run this and all following exporters in
+              a separate worker process. It has no effect on the first
+              exporter in the pipline.";
+            default false;
+          }
+          leaf acquire-cpu {
+            type boolean;
+            description
+              "When 'extrude' is true, select whether the worker
+              process should be pinned to a CPU or not. Has no effect
+              when 'extrude' is set to false.";
+            default true;
+          }
         }
       }
     }
@@ -539,7 +649,7 @@ module snabb-snabbflow-v1 {
     }
 
     list exporter {
-      key name;
+      key "name pipeline";
       description
         "Exporter statistics.";
 
@@ -551,7 +661,16 @@ module snabb-snabbflow-v1 {
           "An exporter defined in /snabbflow-config/ipfix/exporter.";
       }
 
+      leaf pipeline {
+        type leafref {
+          path "/snabbflow-config/ipfix/exporter/pipeline";
+        }
+        description
+          "A pipeline defined in /snabbflow-config/ipfix/pipeline.";
+      }
+
       uses exporter-state;
+      uses submission-state;
 
       list template {
         key id;
@@ -595,7 +714,7 @@ module snabb-snabbflow-v1 {
       }
 
       list exporter {
-        key name;
+        key "name pipeline";
         description
           "Exporter statistics for this RSS group as per
           /snabbflow-config/rss/software-scaling.";
@@ -606,6 +725,14 @@ module snabb-snabbflow-v1 {
           }
           description
             "An exporter defined in /snabbflow-config/ipfix/exporter.";
+        }
+
+        leaf pipeline {
+          type leafref {
+            path "/snabbflow-config/ipfix/exporter/pipeline";
+          }
+          description
+            "A pipeline defined in /snabbflow-config/ipfix/pipeline.";
         }
 
         list instance {
@@ -622,6 +749,7 @@ module snabb-snabbflow-v1 {
           uses worker-state;
           uses exporter-state;
           uses exporter-instance-state;
+          uses submission-state;
 
           list template {
             key id;
@@ -701,6 +829,22 @@ module snabb-snabbflow-v1 {
         type uint32;
         description
           "Process identifier of this worker.";
+      }
+    }
+
+    grouping submission-state {
+      container submission {
+        leaf packets-transmitted {
+          type yang:zero-based-counter64;
+          description
+            "Count of packets sent to the submission worker.";
+        }
+        leaf packets-dropped {
+          type yang:zero-based-counter64;
+          description
+            "Count of packets to the submission worker that were
+          dropped.";
+        }
       }
     }
 
