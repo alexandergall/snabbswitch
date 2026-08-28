@@ -160,12 +160,12 @@ function FlowSet:new (spec, args)
       assert(io.open(args.maps_logfile, "a")) or nil
    create_maps(template, args.maps)
 
-   assert(args.active_timeout > args.scan_time,
+   assert(args.active_timeout >= args.scan_time,
           string.format("Template #%d: active timeout (%d) "
                            .."must be larger than scan time (%d)",
                         template.id, args.active_timeout,
                         args.scan_time))
-   assert(args.idle_timeout > args.scan_time,
+   assert(args.idle_timeout >= args.scan_time,
           string.format("Template #%d: idle timeout (%d) "
                            .."must be larger than scan time (%d)",
                         template.id, args.idle_timeout,
@@ -177,7 +177,10 @@ function FlowSet:new (spec, args)
                idle_timeout = assert(args.idle_timeout),
                active_timeout = assert(args.active_timeout),
                scan_time = args.scan_time,
+               scan_max_distance = args.scan_max_distance,
                parent = assert(args.parent) }
+   o.idle_timeout_ms = to_milliseconds(o.idle_timeout)
+   o.active_timeout_ms = to_milliseconds(o.active_timeout)
 
    if     args.version == 9  then o.template_id = V9_TEMPLATE_ID
    elseif args.version == 10 then o.template_id = V10_TEMPLATE_ID
@@ -207,7 +210,7 @@ function FlowSet:new (spec, args)
                                    " -> "..table.size)
          end
          require('jit').flush()
-         o.table_tb:set(math.ceil(table.size / o.scan_time))
+         o.table_tb:set(math.ceil(table.size / o.scan_time), o.scan_max_distance)
       end,
       max_displacement_limit = 30
    }
@@ -220,6 +223,7 @@ function FlowSet:new (spec, args)
    o.table_scan_time = 0
    o.scratch_entry = o.table.entry_type()
    o.expiry_cursor = 0
+   o.expiry_extra_distance = 0
 
    o.scan_protection = args.scan_protection
    local sp = { table = {} }
@@ -256,7 +260,8 @@ function FlowSet:new (spec, args)
                end
                require('jit').flush()
                sp.table_tb:set(
-                  math.ceil(table.size / args.scan_protection.interval)
+                  math.ceil(table.size / args.scan_protection.interval,
+                            o.scan_max_distance)
                )
             end,
             max_displacement_limit = 30
@@ -527,17 +532,24 @@ end
 -- Walk through flow set to see if flow records need to be expired.
 -- Collect expired records and export them to the collector.
 function FlowSet:expire_records(out, now)
+   -- The cursor is not advanced when a record is removed in order to
+   -- not skip any records. Hence, the effective number of examined
+   -- slots to cover the entire table is larger than the size of the
+   -- table. The difference is compensated incrementally in subsequent
+   -- calls to this function while maintaining the maximum distance
+   -- covered per breath.
+   local distance = self.table_tb:take_burst(self.scan_max_distance - self.expiry_extra_distance)
+      + self.expiry_extra_distance
+   assert(distance <= self.scan_max_distance)
    local cursor = self.expiry_cursor
-   now_ms = to_milliseconds(now)
-   local active = to_milliseconds(self.active_timeout)
-   local idle = to_milliseconds(self.idle_timeout)
+   local entry
+   local now_ms = to_milliseconds(now)
    local expired = 0
-   local burst = self.table_tb:take_burst()
-   for i = 1, burst do
-      local entry
+   local extra_distance = 0
+   for i = 1, distance do
       cursor, entry = self.table:next_entry(cursor, cursor + 1)
       if entry then
-         if now_ms - tonumber(entry.value.flowEndMilliseconds) > idle then
+         if now_ms - tonumber(entry.value.flowEndMilliseconds) > self.idle_timeout_ms then
             self:debug_flow(entry, "expire idle")
             if (not self:suppress_flow(entry, now_ms) and
                 entry.value.packetDeltaCount > 0) then
@@ -546,12 +558,19 @@ function FlowSet:expire_records(out, now)
             end
             self.table:remove_ptr(entry)
             expired = expired + 1
-         elseif now_ms - tonumber(entry.value.flowStartMilliseconds) > active then
+            extra_distance = extra_distance + 1
+         elseif now_ms - tonumber(entry.value.flowStartMilliseconds) > self.active_timeout_ms then
             self:debug_flow(entry, "expire active")
             if (not self:suppress_flow(entry, now_ms) and
                 entry.value.packetDeltaCount > 0) then
                self:add_data_record(entry.key, out)
             end
+            -- NB: all other fields remain unchanged, which can lead
+            -- to stale information for long-lived flows, e.g. the
+            -- previous adjacent ASN. The proper thing to do is to
+            -- delete active flows and let them be re-inserted when
+            -- new packets arrive. This shortcut is meant to save the
+            -- cost for the latter but might not be worth this price.
             entry.value.flowStartMilliseconds = now_ms
             entry.value.flowEndMilliseconds = now_ms
             entry.value.packetDeltaCount = 0
@@ -571,9 +590,8 @@ function FlowSet:expire_records(out, now)
       end
    end
    self.expiry_cursor = cursor
-   events.expired_flows(self.template.id, burst, expired)
-
-   if self.flush_timer() then self:flush_data_records(out) end
+   self.expiry_extra_distance = extra_distance
+   events.expired_flows(self.template.id, distance, expired)
 end
 
 function FlowSet:sync_stats()
@@ -602,6 +620,7 @@ IPFIX = {
       max_load_factor = { default = 0.4 },
       scan_protection = { default = {} },
       scan_time = { default = 10 },
+      scan_max_distance = { default = 50 },
       -- RFC 5153 §6.2 recommends a 10-minute template refresh
       -- configurable from 1 minute to 1 day.
       template_refresh_interval = { default = 600 },
@@ -738,6 +757,7 @@ function IPFIX:reconfig(config)
                            idle_timeout = config.idle_timeout,
                            active_timeout = config.active_timeout,
                            scan_time = config.scan_time,
+                           scan_max_distance = config.scan_max_distance,
                            flush_timeout = config.flush_timeout,
                            parent = self,
                            maps = config.maps,
@@ -842,6 +862,12 @@ function IPFIX:push ()
    for _, input in ipairs(self.input) do
       self:push1(input)
    end
+   local output = assert(self.output.output, "missing output link")
+   local now = ffi.C.get_unix_time()
+   for _,set in ipairs(self.flow_sets) do
+      set:expire_records(output, now)
+      set:expire_flow_rate_records(now)
+   end
 end
 
 function IPFIX:push1(input)
@@ -888,16 +914,14 @@ end
 
 function IPFIX:tick()
    local timestamp = ffi.C.get_unix_time()
-   assert(self.output.output, "missing output link")
-   local output = self.output.output
+   local output = assert(self.output.output, "missing output link")
    for _,set in ipairs(self.flow_sets) do
-      set:expire_records(output, timestamp)
-      set:expire_flow_rate_records(timestamp)
+      if set.flush_timer() then set:flush_data_records(output) end
    end
 
    if self.next_template_refresh < engine.now() then
       self.next_template_refresh = engine.now() + self.template_refresh_interval
-      self:send_template_records(self.output.output)
+      self:send_template_records(output)
    end
 
    if self.stats_timer() then

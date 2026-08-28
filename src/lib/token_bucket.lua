@@ -83,10 +83,10 @@ function token_bucket:take (n)
    return false
 end
 
-function token_bucket:take_burst ()
+function token_bucket:take_burst (max)
    self:can_take(self._burst_size)
-   local tokens = self._tokens
-   self._tokens = 0
+   local tokens = math.min(max or self._tokens, self._tokens)
+   self._tokens = self._tokens - tokens
    return tokens
 end
 
